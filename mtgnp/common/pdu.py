@@ -1,7 +1,3 @@
-"""
-mtgnp/common/pdu.py
-PDU Construction, Validation, and Dispatch Routing.
-"""
 import socket
 from typing import Dict, Any, Callable, Optional
 
