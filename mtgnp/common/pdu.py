@@ -86,3 +86,6 @@ class PDUDispatcher:
 
         # 3. Execute handler
         handler(client_sock, pdu)
+
+# ^ above is for dispatch mechanism under TCP Server: connection handling, framing, dispatch
+# ADD HERE: PDU serialisation/deserialisation (all 25 PDU types)
