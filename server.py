@@ -9,4 +9,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     server = MTGNPServer(host=args.host, port=args.port, verbose=args.verbose)
-    server.start()
+    try:
+        server.start()
+    except KeyboardInterrupt:
+        print("\nServer shutting down gracefully.")
+    finally:
+        server.stop()

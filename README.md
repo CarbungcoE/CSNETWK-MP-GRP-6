@@ -5,6 +5,7 @@ Run the server:
 ```bash
 python server.py --port 4444 --verbose
 ```
+As of writing, server is closed with a keyboard interrupt i.e. CTRL + C
 ## Task / Feature Distribution
 
 | Task / Feature | Jimlor | Naomi | Earl |
