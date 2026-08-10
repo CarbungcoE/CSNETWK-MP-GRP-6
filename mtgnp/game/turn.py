@@ -22,9 +22,13 @@ class TurnEngine:
         "CLEANUP",
     ]
 
-    def __init__(self, state: GameState):
+    def __init__(
+        self,
+        state: GameState,
+        priority: PriorityManager,
+    ):
         self.state = state
-        self.priority = PriorityManager(state)
+        self.priority = priority
 
     def start_game(self) -> None:
         """

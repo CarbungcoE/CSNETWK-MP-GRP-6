@@ -78,6 +78,24 @@ class Dispatcher:
                 message_type=message_type,
             )
 
+        if message_type == "MULLIGAN_CHOICE":
+            error = self._validate_mulligan(
+                player_id,
+                message,
+            )
+
+            if error is not None:
+                return error
+
+        elif message_type in self.PRIORITY_MESSAGES:
+            error = self._validate_priority(
+                player_id,
+                message,
+            )
+
+            if error is not None:
+                return error
+
         try:
             return handler(
                 player_id,
@@ -481,3 +499,38 @@ class Dispatcher:
             "error": code,
             **extra,
         }
+
+    def _validate_mulligan(
+        self,
+        player_id: str,
+        message: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """
+        Validate a MULLIGAN_CHOICE sequence number.
+
+        Mulligan choices use the authoritative sequence number,
+        but do not require the player to have priority.
+        """
+        session = self._get_player_session(player_id)
+
+        if session is None:
+            return self._error("NOT_IN_GAME")
+
+        seq_num = message.get("seq_num")
+
+        if seq_num is None:
+            return self._error("MISSING_SEQUENCE_NUMBER")
+
+        try:
+            seq_num = int(seq_num)
+        except (TypeError, ValueError):
+            return self._error("INVALID_SEQUENCE_NUMBER")
+
+        if not session.validate_priority_seq_num(seq_num):
+            return self._error(
+                "STALE_ACTION",
+                expected_seq_num=session.get_priority_seq_num(),
+                received_seq_num=seq_num,
+            )
+
+        return None

@@ -17,8 +17,11 @@ class GameSession:
       self.state = GameState()
 
       self.lifecycle = GameLifecycle(self.state)
-      self.turn = TurnEngine(self.state)
       self.priority = PriorityManager(self.state)
+      self.turn = TurnEngine(
+        self.state,
+        self.priority
+      )
       self.stack = StackManager(self.state)
       self.combat = CombatSystem(self.state)
 

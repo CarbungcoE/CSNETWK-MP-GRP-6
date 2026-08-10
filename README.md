@@ -5,6 +5,10 @@ Run the server:
 ```bash
 python server.py --port 4444 --verbose
 ```
+Run the test client (after running the server):
+```bash
+python test_client.py
+```
 As of writing, server is closed with a keyboard interrupt i.e. CTRL + C
 ## Task / Feature Distribution
 
