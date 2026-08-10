@@ -8,8 +8,8 @@ from mtgnp.common.framing import send_pdu, recv_pdu
 from mtgnp.common.logger import VerboseLogger
 from mtgnp.common.pdu import (
     build_player_ready, build_mulligan_choice, build_priority_pass,
-    build_play_land, build_cast_spell, build_declare_attackers,
-    build_declare_blockers, build_concede, build_discard,
+    build_play_land, build_cast_spell, build_activate_ability, build_declare_attackers,
+    build_declare_blockers, build_assign_damage_order, build_concede, build_discard,
     build_trigger_order_response, build_trigger_choice_response
 )
 from mtgnp.client.engine import ClientEngine
@@ -74,6 +74,8 @@ class MTGNPClient:
                 print("Options: [pass] Pass | [land] Play Land | [cast] Cast Spell | [concede] Concede")
 
         elif pdu_type == "PHASE_TRANSITION":
+            self.engine.seq_num = pdu.get("seq_num", self.engine.seq_num)
+            self.engine.phase = pdu.get("to_phase", self.engine.phase)
             print(f"\n*** PHASE TRANSITION: {pdu.get('from_phase')} -> {pdu.get('to_phase')} (Turn {pdu.get('turn')}) ***")
 
         elif pdu_type == "STACK_PUSH":
@@ -105,6 +107,8 @@ class MTGNPClient:
             print(f"\n!!! SERVER ERROR [{pdu.get('code')}]: {pdu.get('message')} !!!")
 
         elif pdu_type == "GAME_OVER":
+            self.engine.phase = "LOBBY"
+            self.engine.priority_holder = None
             print(f"\n==========================================")
             print(f" GAME OVER! Winner: {pdu.get('winner_id')} | Reason: {pdu.get('reason')}")
             print(f"==========================================")
@@ -172,11 +176,23 @@ class MTGNPClient:
                             bottoms = [x.strip() for x in b_str.split(",")]
                     self._send(build_mulligan_choice(self.engine.seq_num, keep, bottoms))
 
+                elif cmd == "ability":
+                    source=input("Source permanent id: ").strip()
+                    idx=int(input("Ability index: ").strip() or "0")
+                    target=input("Target (optional): ").strip()
+                    self._send(build_activate_ability(self.engine.seq_num, source, idx, [target] if target else [], {"tap": True, "mana": {}}))
+                elif cmd == "damageorder":
+                    aid=input("Attacker id: ").strip()
+                    bids=[x.strip() for x in input("Blocker order comma-separated: ").split(",") if x.strip()]
+                    self._send(build_assign_damage_order(self.engine.seq_num, aid, bids))
+                elif cmd == "discard":
+                    ids=[x.strip() for x in input("Cards to discard comma-separated: ").split(",") if x.strip()]
+                    self._send(build_discard(self.engine.seq_num, ids))
                 elif cmd == "concede":
                     self._send(build_concede(self.engine.seq_num, self.player_id))
 
                 else:
-                    print("Unknown command. Valid: pass, land, cast, attack, block, mulligan, concede")
+                    print("Unknown command. Valid: pass, land, cast, ability, attack, block, damageorder, discard, mulligan, concede")
 
             except (KeyboardInterrupt, EOFError):
                 print("\nExiting client...")

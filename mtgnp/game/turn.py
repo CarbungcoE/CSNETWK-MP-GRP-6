@@ -31,9 +31,6 @@ class TurnEngine:
         "DRAW",
         "PRECOMBAT_MAIN",
         "BEGIN_COMBAT",
-        "DECLARE_ATTACKERS",
-        "DECLARE_BLOCKERS",
-        "ASSIGN_DAMAGE_ORDER",
         "FIRST_STRIKE_DAMAGE",
         "COMBAT_DAMAGE",
         "END_OF_COMBAT",
@@ -44,7 +41,7 @@ class TurnEngine:
     def __init__(self, state: GameState):
         self.state = state
 
-    def start_game(self) -> None:
+    def start_game(self) -> list[dict]:
         """
         Transition from MULLIGAN into the first turn.
 
@@ -63,9 +60,11 @@ class TurnEngine:
             )
 
         self.state.turn = 1
+        previous_phase = self.state.phase
         self.state.phase = "UNTAP"
         self.state.priority_player = None
         self.state.priority_seq_num = 0
+        self.state.consecutive_passes = 0
 
         if self.state.active_player is None:
             self.state.active_player = next(
@@ -73,8 +72,11 @@ class TurnEngine:
             )
 
         self._prepare_turn()
+        self._untap_active_player()
 
-    def begin_turn(self) -> None:
+        return [{"from_phase": previous_phase, "to_phase": "UNTAP"}]
+
+    def begin_turn(self) -> list[dict]:
         """
         Begin a new turn.
         """
@@ -89,11 +91,18 @@ class TurnEngine:
                 "Cannot begin a turn without players"
             )
 
+        previous_phase = self.state.phase
         self.state.turn += 1
         self.state.phase = "UNTAP"
         self.state.priority_player = None
+        self.state.priority_seq_num = 0
+        self.state.consecutive_passes = 0
+        self.state.phase_decision_complete = False
 
         self._prepare_turn()
+        self._untap_active_player()
+
+        return [{"from_phase": previous_phase, "to_phase": "UNTAP"}]
 
     def advance_phase(self) -> str:
         """
@@ -118,17 +127,90 @@ class TurnEngine:
 
         if current_index == len(self.PHASES) - 1:
             self._end_turn()
-        else:
-            self.state.phase = self.PHASES[
-                current_index + 1
-            ]
+            return self.state.phase
 
+        self.state.phase = self.PHASES[current_index + 1]
         self.state.priority_player = None
+        self.state.consecutive_passes = 0
+        self.state.phase_decision_complete = False
 
+        self._on_phase_enter(self.state.phase)
         return self.state.phase
 
     def requires_priority(self) -> bool:
         return self.state.phase in self.PRIORITY_PHASES
+
+
+    def _on_phase_enter(self, phase: str) -> None:
+        """Apply automatic rules that occur when entering a phase."""
+        if phase == "UNTAP":
+            self._prepare_turn()
+            self._untap_active_player()
+        elif phase == "DRAW":
+            self._draw_step()
+        elif phase == "CLEANUP":
+            self._cleanup_step()
+        elif phase in {"BEGIN_COMBAT", "DECLARE_ATTACKERS"}:
+            self.state.phase_decision_complete = False
+
+    def _untap_active_player(self) -> None:
+        """Untap all permanents controlled by the active player."""
+        if self.state.active_player is None:
+            return
+        player = self.state.players.get(self.state.active_player)
+        if player is None:
+            raise ValueError("Active player is not registered")
+
+        for permanent in player.battlefield:
+            permanent["tapped"] = False
+            if permanent.get("summoning_sickness"):
+                permanent["summoning_sickness"] = False
+
+    def _draw_step(self) -> None:
+        """Perform the automatic draw, except on the first turn."""
+        if self.state.active_player is None:
+            raise ValueError("Active player is not registered")
+
+        player = self.state.players.get(self.state.active_player)
+        if player is None:
+            raise ValueError("Active player is not registered")
+
+        # MTGNP 1.0: the first player skips their first draw step.
+        if self.state.turn == 1:
+            return
+
+        if not player.library:
+            self.state.game_over = True
+            self.state.winner = next(
+                (pid for pid in self.state.players if pid != self.state.active_player),
+                None,
+            )
+            self.state.game_over_reason = "DECK_EMPTY"
+            self.state.priority_player = None
+            return
+
+        player.hand.append(player.library.pop())
+
+    def _cleanup_step(self) -> None:
+        """Apply automatic cleanup effects that do not require player input."""
+        if self.state.active_player is None:
+            return
+        player = self.state.players.get(self.state.active_player)
+        if player is None:
+            raise ValueError("Active player is not registered")
+
+        # Remove damage, temporary effects, and per-turn prevention flags.
+        for permanent in player.battlefield:
+            if "damage" in permanent: permanent["damage"] = 0
+            if permanent.get("temp_power"): permanent.pop("temp_power", None)
+            if permanent.get("temp_toughness"): permanent.pop("temp_toughness", None)
+            permanent.pop("protection_until_turn", None)
+        for p in self.state.players.values():
+            p.damage_prevention = 0
+            p.life_gain_prevented = False
+            p.damage_prevented = False
+            for c in p.battlefield:
+                if c.get("attacking"): c.pop("attacking", None)
 
     def _prepare_turn(self) -> None:
         """

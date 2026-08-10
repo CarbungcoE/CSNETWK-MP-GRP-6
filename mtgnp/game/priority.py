@@ -29,8 +29,6 @@ class PriorityManager:
             )
 
         self.state.priority_player = player_id
-        self.state.priority_seq_num += 1
-
         return self.state.priority_seq_num
 
     def clear_priority(self) -> None:
@@ -80,8 +78,6 @@ class PriorityManager:
         next_index = (current_index + 1) % len(player_ids)
 
         self.state.priority_player = player_ids[next_index]
-        self.state.priority_seq_num += 1
-
         return self.state.priority_player
 
     def grant_active_player_priority(self) -> str:
@@ -99,6 +95,9 @@ class PriorityManager:
 
         return self.state.active_player
     
+    def set_priority_seq_num(self, seq_num: int) -> None:
+        self.state.priority_seq_num = int(seq_num)
+
     def validate_seq_num(self, seq_num: int) -> bool:
         """
         Check whether a client-provided sequence number matches

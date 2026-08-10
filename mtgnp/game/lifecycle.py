@@ -3,6 +3,7 @@ from typing import Dict, Any, Tuple
 
 from .game_state import GameState
 from .player import PlayerState
+from .card_catalog import CardCatalog
 
 
 class GameLifecycle:
@@ -13,6 +14,7 @@ class GameLifecycle:
 
     def __init__(self, state: GameState):
         self.state = state
+        self.cards = CardCatalog()
 
     def process_player_ready(
         self,
@@ -38,8 +40,21 @@ class GameLifecycle:
         ):
             return False, "GAME_FULL", {}
 
-        # Validate deck size.
-        if not (1 <= len(deck_list) <= 50):
+        # Validate deck size and every card instance against the
+        # authoritative fixed card list.
+        if not isinstance(deck_list, list) or not (1 <= len(deck_list) <= 50):
+            return False, "ILLEGAL_DECK", {}
+        if any(not self.cards.is_known_instance(card_id) for card_id in deck_list):
+            return False, "ILLEGAL_DECK", {}
+        # Instance IDs are unique physical cards; base-copy limits come from the master list.
+        counts={}
+        for card_id in deck_list:
+            base=card_id.rsplit("_",1)[0]
+            counts[base]=counts.get(base,0)+1
+            card=self.cards.get(base)
+            if card and counts[base] > int(card.get("Copies in Set") or 999):
+                return False, "ILLEGAL_DECK", {}
+        if len(set(deck_list)) != len(deck_list):
             return False, "ILLEGAL_DECK", {}
 
         # Register or update player.
@@ -85,6 +100,13 @@ class GameLifecycle:
         self.state.priority_player = None
         self.state.priority_seq_num = 0
         self.state.stack.clear()
+        self.state.phase_action_seq = 0
+        self.state.phase_decision_complete = False
+        self.state.pending_discard_seq.clear()
+        self.state.pending_trigger_orders.clear()
+        self.state.pending_trigger_choices.clear()
+        self.state.pending_trigger_choice_seq.clear()
+        self.state.pending_trigger_order_seq.clear()
 
         # Determine who goes first.
         self.state.active_player = random.choice(
@@ -105,6 +127,11 @@ class GameLifecycle:
             player.mulligan_count = 0
             player.kept_hand = False
             player.land_played_this_turn = False
+            player.exile.clear()
+            player.mana_pool = {c: 0 for c in "WUBRGC"}
+            player.damage_prevention = 0
+            player.life_gain_prevented = False
+            player.damage_prevented = False
 
             # Draw initial seven cards.
             draw_count = min(
@@ -253,6 +280,7 @@ class GameLifecycle:
             "active_player": self.state.active_player,
             "priority_player": self.state.priority_player,
             "priority_seq_num": self.state.priority_seq_num,
+            "land_played_this_turn": target_player.land_played_this_turn,
             "life_totals": {
                 pid: player.life
                 for pid, player in self.state.players.items()

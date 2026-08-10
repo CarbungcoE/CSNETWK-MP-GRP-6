@@ -44,7 +44,7 @@ class ClientEngine:
 
     def set_priority(self, pdu):
         self.seq_num = pdu.get("seq_num", self.seq_num)
-        self.priority_holder = pdu.get("player_id", self.pid)
+        self.priority_holder = pdu.get("priority_player", pdu.get("player_id", self.pid))
         self.time_limit = pdu.get("time_limit_ms", 60000)
 
     def draw_board(self):

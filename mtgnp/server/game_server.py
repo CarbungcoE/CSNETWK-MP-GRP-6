@@ -172,3 +172,10 @@ class GameServer:
             return None
 
         return self.sessions.get(session_id)
+    def reset_session(self, session_id: str) -> GameSession:
+        """Replace a finished session while preserving player/socket associations."""
+        if session_id not in self.sessions:
+            raise ValueError("Session does not exist")
+        session=GameSession()
+        self.sessions[session_id]=session
+        return session

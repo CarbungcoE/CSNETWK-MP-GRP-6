@@ -21,8 +21,6 @@ class Dispatcher:
         "DECLARE_ATTACKERS",
         "DECLARE_BLOCKERS",
         "ASSIGN_DAMAGE_ORDER",
-        "TRIGGER_ORDER_RESPONSE",
-        "TRIGGER_CHOICE_RESPONSE",
     }
 
     def __init__(self, server: GameServer):
@@ -39,7 +37,7 @@ class Dispatcher:
         message_type = message.get("type")
 
         if not message_type:
-            return self._error("MISSING_MESSAGE_TYPE")
+            return self._error("UNKNOWN_TYPE")
 
         handler = {
             "PLAYER_READY": self.handle_player_ready,
@@ -63,7 +61,7 @@ class Dispatcher:
 
         if handler is None:
             return self._error(
-                "UNKNOWN_MESSAGE_TYPE",
+                "UNKNOWN_TYPE",
                 message_type=message_type,
             )
 
@@ -82,11 +80,27 @@ class Dispatcher:
             )
 
             if error is not None:
-                return error
+                return self._finalize_error(error, message)
 
         # --------------------------------------------------------------
         # PRIORITY ACTIONS
         # --------------------------------------------------------------
+        elif message_type == "TRIGGER_ORDER_RESPONSE":
+            error = self._validate_trigger_order_response(player_id, message)
+            if error is not None:
+                return self._finalize_error(error, message)
+        elif message_type == "TRIGGER_CHOICE_RESPONSE":
+            error = self._validate_trigger_choice_response(player_id, message)
+            if error is not None:
+                return self._finalize_error(error, message)
+        elif message_type == "DISCARD":
+            error = self._validate_discard(player_id, message)
+            if error is not None:
+                return self._finalize_error(error, message)
+        elif message_type in {"DECLARE_ATTACKERS", "DECLARE_BLOCKERS", "ASSIGN_DAMAGE_ORDER"}:
+            error = self._validate_phase_action(player_id, message)
+            if error is not None:
+                return self._finalize_error(error, message)
         elif message_type in self.PRIORITY_MESSAGES:
             error = self._validate_priority(
                 player_id,
@@ -94,19 +108,22 @@ class Dispatcher:
             )
 
             if error is not None:
-                return error
+                return self._finalize_error(error, message)
 
         try:
-            return handler(
-                player_id,
-                message,
-            )
-
+            result = handler(player_id, message)
         except ValueError as exc:
-            return self._error(
-                "INVALID_REQUEST",
-                detail=str(exc),
-            )
+            allowed = {
+                "ILLEGAL_DECK", "UNKNOWN_TYPE", "STALE_ACTION",
+                "NOT_YOUR_PRIORITY", "ILLEGAL_ACTION", "ILLEGAL_TARGET",
+                "TRIGGER_ORDER_INVALID", "TRIGGER_CHOICE_INVALID",
+                "INSUFFICIENT_MANA", "WRONG_PHASE", "DUPLICATE_ID",
+                "DECK_EMPTY", "LIFE_ZERO", "CONCEDE", "DISCONNECT"
+            }
+            result = self._error(str(exc) if str(exc) in allowed else "ILLEGAL_ACTION", detail=str(exc))
+        if isinstance(result, dict) and result.get("type") == "ERROR":
+            return self._finalize_error(result, message)
+        return result
 
     # ------------------------------------------------------------------
     # Validation
@@ -124,14 +141,14 @@ class Dispatcher:
 
         if session is None:
             return self._error(
-                "NOT_IN_GAME"
+                "ILLEGAL_ACTION"
             )
 
         if not session.has_priority(
             player_id
         ):
             return self._error(
-                "NOT_PRIORITY_PLAYER"
+                "NOT_YOUR_PRIORITY"
             )
 
         seq_num = message.get(
@@ -140,14 +157,14 @@ class Dispatcher:
 
         if seq_num is None:
             return self._error(
-                "MISSING_SEQUENCE_NUMBER"
+                "ILLEGAL_ACTION"
             )
 
         try:
             seq_num = int(seq_num)
         except (TypeError, ValueError):
             return self._error(
-                "INVALID_SEQUENCE_NUMBER"
+                "ILLEGAL_ACTION"
             )
 
         if not session.validate_priority_seq_num(
@@ -164,6 +181,49 @@ class Dispatcher:
         return None
 
     
+    def _validate_trigger_order_response(self, player_id: str, message: dict[str, Any]) -> dict[str, Any] | None:
+        session=self._get_player_session(player_id)
+        if session is None: return self._error("ILLEGAL_ACTION")
+        expected=session.state.pending_trigger_order_seq.get(player_id)
+        if expected is None or message.get("seq_num") != expected:
+            return self._error("STALE_ACTION", expected_seq_num=expected, received_seq_num=message.get("seq_num"))
+        return None
+
+    def _validate_trigger_choice_response(self, player_id: str, message: dict[str, Any]) -> dict[str, Any] | None:
+        session=self._get_player_session(player_id)
+        if session is None: return self._error("ILLEGAL_ACTION")
+        expected=session.state.pending_trigger_choice_seq.get(player_id)
+        if expected is None or message.get("seq_num") != expected:
+            return self._error("STALE_ACTION", expected_seq_num=expected, received_seq_num=message.get("seq_num"))
+        return None
+
+    def _validate_discard(self, player_id: str, message: dict[str, Any]) -> dict[str, Any] | None:
+        session=self._get_player_session(player_id)
+        if session is None: return self._error("ILLEGAL_ACTION")
+        expected=session.state.pending_discard_seq.get(player_id)
+        if expected is None: return self._error("WRONG_PHASE")
+        seq=message.get("seq_num")
+        if seq is None: return self._error("ILLEGAL_ACTION")
+        try: seq=int(seq)
+        except (TypeError,ValueError): return self._error("ILLEGAL_ACTION")
+        if seq != expected: return self._error("STALE_ACTION", expected_seq_num=expected, received_seq_num=seq)
+        return None
+
+    def _validate_phase_action(self, player_id: str, message: dict[str, Any]) -> dict[str, Any] | None:
+        session=self._get_player_session(player_id)
+        if session is None: return self._error("ILLEGAL_ACTION")
+        expected=session.state.phase_action_seq
+        seq=message.get("seq_num")
+        if seq is None: return self._error("ILLEGAL_ACTION")
+        try: seq=int(seq)
+        except (TypeError,ValueError): return self._error("ILLEGAL_ACTION")
+        if seq != expected:
+            return self._error("STALE_ACTION", expected_seq_num=expected, received_seq_num=seq)
+        if message.get("type")=="DECLARE_ATTACKERS" and session.state.phase!="DECLARE_ATTACKERS": return self._error("WRONG_PHASE")
+        if message.get("type")=="DECLARE_BLOCKERS" and session.state.phase!="DECLARE_BLOCKERS": return self._error("WRONG_PHASE")
+        if message.get("type")=="ASSIGN_DAMAGE_ORDER" and session.state.phase!="ASSIGN_DAMAGE_ORDER": return self._error("WRONG_PHASE")
+        return None
+
     def _validate_mulligan(
         self,
         player_id: str,
@@ -179,7 +239,7 @@ class Dispatcher:
         session = self._get_player_session(player_id)
 
         if session is None:
-            return self._error("NOT_IN_GAME")
+            return self._error("ILLEGAL_ACTION")
 
         if session.state.phase != "MULLIGAN":
             return self._error("WRONG_PHASE")
@@ -188,14 +248,14 @@ class Dispatcher:
 
         if seq_num is None:
             return self._error(
-                "MISSING_SEQUENCE_NUMBER"
+                "ILLEGAL_ACTION"
             )
 
         try:
             seq_num = int(seq_num)
         except (TypeError, ValueError):
             return self._error(
-                "INVALID_SEQUENCE_NUMBER"
+                "ILLEGAL_ACTION"
             )
 
         expected = session.get_mulligan_seq(
@@ -204,7 +264,7 @@ class Dispatcher:
 
         if expected is None:
             return self._error(
-                "MULLIGAN_SEQUENCE_NOT_INITIALIZED"
+                "STALE_ACTION"
             )
 
         if seq_num != expected:
@@ -234,7 +294,7 @@ class Dispatcher:
 
         if not session_id:
             return self._error(
-                "MISSING_SESSION_ID"
+                "ILLEGAL_ACTION"
             )
 
         try:
@@ -295,7 +355,7 @@ class Dispatcher:
 
         if session is None:
             return self._error(
-                "NOT_IN_GAME"
+                "ILLEGAL_ACTION"
             )
 
         seq_num = message.get(
@@ -304,14 +364,14 @@ class Dispatcher:
 
         if seq_num is None:
             return self._error(
-                "MISSING_SEQUENCE_NUMBER"
+                "ILLEGAL_ACTION"
             )
 
         try:
             seq_num = int(seq_num)
         except (TypeError, ValueError):
             return self._error(
-                "INVALID_SEQUENCE_NUMBER"
+                "ILLEGAL_ACTION"
             )
 
         # MULLIGAN_CHOICE echoes the GAME_STATE_UPDATE
@@ -378,15 +438,38 @@ class Dispatcher:
 
         if session is None:
             return self._error(
-                "NOT_IN_GAME"
+                "ILLEGAL_ACTION"
             )
 
-        next_player = session.pass_priority()
+        result = session.pass_priority()
+
+        if result.get("advanced"):
+            return {
+                "type": "PRIORITY_PHASE_ADVANCED",
+                "transitions": result.get("transitions", []),
+                "priority_player": result.get("priority_player"),
+                "priority_seq_num": result.get("priority_seq_num"),
+                "phase": result.get("phase"),
+                "turn": result.get("turn"),
+                "active_player": result.get("active_player"),
+            }
+
+        if result.get("stack_resolved"):
+            return {
+                "type": "STACK_PRIORITY_RESOLVED",
+                "stack_resolved": True,
+                "resolved": result.get("resolved", {}),
+                "priority_player": result.get("priority_player"),
+                "priority_seq_num": result.get("priority_seq_num"),
+                "phase": result.get("phase"),
+                "turn": result.get("turn"),
+                "active_player": result.get("active_player"),
+            }
 
         return {
             "type": "PRIORITY_GRANT",
-            "priority_player": next_player,
-            "seq_num": session.get_priority_seq_num(),
+            "priority_player": result.get("priority_player"),
+            "seq_num": result.get("priority_seq_num"),
         }
 
     # ------------------------------------------------------------------
@@ -405,7 +488,7 @@ class Dispatcher:
 
         if session is None:
             return self._error(
-                "NOT_IN_GAME"
+                "ILLEGAL_ACTION"
             )
 
         attackers = message.get(
@@ -438,7 +521,7 @@ class Dispatcher:
 
         if session is None:
             return self._error(
-                "NOT_IN_GAME"
+                "ILLEGAL_ACTION"
             )
 
         blockers = message.get(
@@ -459,121 +542,151 @@ class Dispatcher:
             "blockers": blockers,
         }
 
-    def handle_assign_damage_order(
-        self,
-        player_id: str,
-        message: dict[str, Any],
-    ) -> Any:
-        """
-        Process ASSIGN_DAMAGE_ORDER.
-        """
-        session = self._get_player_session(player_id)
-
-        if session is None:
-            return self._error(
-                "NOT_IN_GAME"
-            )
-
-        damage_order = message.get(
-            "damage_order"
-        )
-
-        if damage_order is None:
-            return self._error(
-                "MISSING_DAMAGE_ORDER"
-            )
-
-        return self._error(
-            "NOT_IMPLEMENTED",
-            detail=(
-                "Damage ordering is not implemented yet."
-            ),
-        )
+    def handle_assign_damage_order(self, player_id: str, message: dict[str, Any]) -> Any:
+        session=self._get_player_session(player_id)
+        if session is None: return self._error("ILLEGAL_ACTION")
+        attacker_id=message.get("attacker_id")
+        blocker_order=message.get("blocker_order")
+        if not attacker_id or not isinstance(blocker_order,list): return self._error("ILLEGAL_ACTION")
+        try: result=session.assign_damage_order(player_id, attacker_id, blocker_order)
+        except ValueError as exc: return self._error(str(exc))
+        return {"type":"DAMAGE_ORDER_ASSIGNED", **result}
 
     # ------------------------------------------------------------------
     # Other game actions
     # ------------------------------------------------------------------
 
-    def handle_discard(
-        self,
-        player_id: str,
-        message: dict[str, Any],
-    ) -> Any:
-        return self._error(
-            "NOT_IMPLEMENTED",
-            detail="Discard handling is not implemented yet.",
-        )
+    def handle_discard(self, player_id: str, message: dict[str, Any]) -> Any:
+        session=self._get_player_session(player_id)
+        if session is None: return self._error("ILLEGAL_ACTION")
+        try: result=session.discard(player_id, message.get("card_ids", []))
+        except ValueError as exc: return self._error(str(exc))
+        return {"type":"DISCARD_RESULT", **result}
 
-    def handle_concede(
-        self,
-        player_id: str,
-        message: dict[str, Any],
-    ) -> Any:
-        session = self._get_player_session(player_id)
-
-        if session is None:
-            return self._error(
-                "NOT_IN_GAME"
-            )
-
-        return self._error(
-            "NOT_IMPLEMENTED",
-            detail="Concede handling is not implemented yet.",
-        )
+    def handle_concede(self, player_id: str, message: dict[str, Any]) -> Any:
+        session=self._get_player_session(player_id)
+        if session is None: return self._error("ILLEGAL_ACTION")
+        try: result=session.concede(player_id)
+        except ValueError as exc: return self._error(str(exc))
+        return {"type":"GAME_OVER", **result}
 
     def handle_cast_spell(
         self,
         player_id: str,
         message: dict[str, Any],
     ) -> Any:
-        return self._error(
-            "NOT_IMPLEMENTED",
-            detail="Spell casting is not implemented yet.",
-        )
+        session = self._get_player_session(player_id)
+        if session is None:
+            return self._error("ILLEGAL_ACTION")
 
-    def handle_activate_ability(
-        self,
-        player_id: str,
-        message: dict[str, Any],
-    ) -> Any:
-        return self._error(
-            "NOT_IMPLEMENTED",
-            detail="Ability activation is not implemented yet.",
-        )
+        card_id = message.get("card_id")
+        if not card_id:
+            return self._error("ILLEGAL_ACTION")
+
+        targets = message.get("targets", [])
+        mana_payment = message.get("mana_payment", {})
+
+        try:
+            result = session.cast_spell(
+                player_id,
+                card_id,
+                targets,
+                mana_payment,
+            )
+        except ValueError as exc:
+            return self._error(str(exc))
+
+        return {
+            "type": "SPELL_CAST",
+            **result,
+        }
+
+    def handle_activate_ability(self, player_id: str, message: dict[str, Any]) -> Any:
+        session=self._get_player_session(player_id)
+        if session is None: return self._error("ILLEGAL_ACTION")
+        source_id=message.get("source_id"); ability_index=message.get("ability_index")
+        if source_id is None or ability_index is None: return self._error("ILLEGAL_ACTION")
+        try:
+            result=session.activate_ability(player_id, source_id, int(ability_index), message.get("targets", []), message.get("cost_payment", {}))
+        except ValueError as exc: return self._error(str(exc))
+        return result
 
     def handle_play_land(
         self,
         player_id: str,
         message: dict[str, Any],
     ) -> Any:
-        return self._error(
-            "NOT_IMPLEMENTED",
-            detail="Land playing is not implemented yet.",
-        )
+        session = self._get_player_session(player_id)
 
-    def handle_trigger_order_response(
-        self,
-        player_id: str,
-        message: dict[str, Any],
-    ) -> Any:
-        return self._error(
-            "NOT_IMPLEMENTED",
-            detail="Trigger ordering is not implemented yet.",
-        )
+        if session is None:
+            return self._error(
+                "ILLEGAL_ACTION"
+            )
 
-    def handle_trigger_choice_response(
-        self,
-        player_id: str,
-        message: dict[str, Any],
-    ) -> Any:
-        return self._error(
-            "NOT_IMPLEMENTED",
-            detail="Trigger choice handling is not implemented yet.",
-        )
+        card_id = message.get("card_id")
+
+        if not card_id:
+            return self._error(
+                "ILLEGAL_ACTION"
+            )
+
+        try:
+            result = session.play_land(
+                player_id,
+                card_id,
+            )
+        except ValueError as exc:
+            return self._error(
+                str(exc),
+            )
+
+        return {
+            "type": "LAND_PLAYED",
+            "player_id": result["player_id"],
+            "card_id": result["card_id"],
+        }
+
+    def handle_trigger_order_response(self, player_id: str, message: dict[str, Any]) -> Any:
+        session=self._get_player_session(player_id)
+        if session is None: return self._error("ILLEGAL_ACTION")
+        pending=session.state.pending_trigger_orders.get(player_id)
+        if pending is None: return self._error("TRIGGER_ORDER_INVALID")
+        ids=message.get("ordered_trigger_ids")
+        if not isinstance(ids,list) or ids != pending["trigger_ids"] and set(ids)!=set(pending["trigger_ids"]): return self._error("TRIGGER_ORDER_INVALID")
+        session.state.pending_trigger_orders.pop(player_id,None)
+        session.state.pending_trigger_order_seq.pop(player_id,None)
+        items=[]
+        for tid in reversed(ids):
+            item=pending["items"][tid]; session.push_stack(item); items.append(item)
+        return {"type":"TRIGGER_ORDER_ACCEPTED","trigger_ids":ids,"items":items}
+
+    def handle_trigger_choice_response(self, player_id: str, message: dict[str, Any]) -> Any:
+        session=self._get_player_session(player_id)
+        if session is None: return self._error("ILLEGAL_ACTION")
+        pending=session.state.pending_trigger_choices.get(player_id)
+        if pending is None or message.get("trigger_id") != pending.get("trigger_id"): return self._error("TRIGGER_CHOICE_INVALID")
+        if pending.get("requires_target") and message.get("accept") and message.get("chosen_target") not in pending.get("legal_targets",[]): return self._error("ILLEGAL_TARGET")
+        session.state.pending_trigger_choices.pop(player_id,None)
+        session.state.pending_trigger_choice_seq.pop(player_id,None)
+        item=pending["item"]
+        if message.get("accept"):
+            item["targets"]=[message.get("chosen_target")] if message.get("chosen_target") else []
+            session.push_stack(item)
+            return {"type":"TRIGGER_CHOICE_ACCEPTED","trigger_id":message.get("trigger_id"),"accepted":True,"item":item}
+        return {"type":"TRIGGER_CHOICE_ACCEPTED","trigger_id":message.get("trigger_id"),"accepted":False,"item":None}
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _finalize_error(error: dict[str, Any], message: dict[str, Any]) -> dict[str, Any]:
+        if error.get("type") != "ERROR": return error
+        result=dict(error)
+        result.setdefault("seq_num", message.get("seq_num",0))
+        result.setdefault("rejected_action", dict(message))
+        result.pop("error",None)
+        return result
 
     def _get_player_session(
         self,
@@ -596,6 +709,7 @@ class Dispatcher:
         """
         return {
             "type": "ERROR",
-            "error": code,
+            "code": code,
+            "message": extra.pop("message", code),
             **extra,
         }

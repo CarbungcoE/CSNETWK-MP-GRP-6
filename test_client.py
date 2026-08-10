@@ -1,4 +1,5 @@
 import socket
+import select
 
 from mtgnp.common.framing import send_pdu, recv_pdu
 
@@ -88,6 +89,32 @@ def send_priority_pass(sock, player_id, seq_num):
     print(f"{player_id} → PRIORITY_PASS (seq={seq_num})")
 
 
+def receive_priority_event():
+    """Receive the next priority-related PDU from either player socket."""
+    readable, _, _ = select.select(
+        [player1, player2],
+        [],
+        [],
+        10,
+    )
+
+    if not readable:
+        raise RuntimeError(
+            "Timed out waiting for the next priority event"
+        )
+
+    sock = readable[0]
+    player_id = "player_1" if sock is player1 else "player_2"
+    pdu = receive(sock, player_id)
+
+    if pdu is None:
+        raise RuntimeError(
+            f"{player_id}: connection closed during priority sequence"
+        )
+
+    return sock, player_id, pdu
+
+
 def expect_priority_grant(sock, player_id):
     """
     Receive the server's response to PRIORITY_PASS.
@@ -109,7 +136,7 @@ def expect_priority_grant(sock, player_id):
         )
 
     next_seq = response["seq_num"]
-    next_priority = response["priority_player"]
+    next_priority = response["player_id"]
 
     print(
         f"Priority is now {next_priority}; "
@@ -241,37 +268,18 @@ current_state = None
 priority_player = None
 priority_seq = None
 
-# The server's PRIORITY_GRANT seq_num is a server/message sequence.
-# It is NOT the seq_num that the newly-prioritized client should send.
-#
-# Client action sequence starts at 1 for the first priority action:
-#   player_2 -> PRIORITY_PASS seq=1
-#   player_1 -> PRIORITY_PASS seq=2
-#
-next_priority_action_seq = 1
+# Priority actions MUST echo the latest PRIORITY_GRANT seq_num.
+last_priority_action_sent = 0
 
 while True:
-    # Receive the next server message from player_2's connection.
-    #
-    # The server sends GAME_STATE_UPDATE messages to both clients, but
-    # PRIORITY_GRANT messages are returned on the socket of the player
-    # who just passed priority.
-    response = receive(player2, "player_2")
-
-    if response is None:
-        raise RuntimeError(
-            "player_2: server closed connection during first turn"
-        )
+    _, received_player_id, response = receive_priority_event()
 
     response_type = response.get("type")
 
     print(
-        f"First-turn response: {response_type} -> {response}"
+        f"First-turn response on {received_player_id}: "
+        f"{response_type} -> {response}"
     )
-
-    # --------------------------------------------------------
-    # GAME STATE UPDATE
-    # --------------------------------------------------------
 
     if response_type == "GAME_STATE_UPDATE":
         current_state = response.get("state", {})
@@ -286,12 +294,17 @@ while True:
             f"priority_seq={current_state.get('priority_seq_num')}"
         )
 
-        # MAIN phase reached.
         if phase == "PRECOMBAT_MAIN":
             break
 
-        # If this state grants priority, pass it.
         if priority_player is not None:
+            current_priority_seq = current_state.get("priority_seq_num", 0)
+
+            # Both clients receive the same GAME_STATE_UPDATE. Only
+            # send one pass for each authoritative priority token.
+            if current_priority_seq <= last_priority_action_sent:
+                continue
+
             sock = (
                 player1
                 if priority_player == "player_1"
@@ -301,39 +314,26 @@ while True:
             send_priority_pass(
                 sock,
                 priority_player,
-                next_priority_action_seq,
+                current_priority_seq,
             )
 
             print(
                 f"DEBUG: sent priority pass with "
-                f"client seq={next_priority_action_seq}"
+                f"client seq={server_seq}"
             )
 
-            next_priority_action_seq += 1
+            last_priority_action_sent = current_priority_seq
 
         continue
 
-    # --------------------------------------------------------
-    # PRIORITY GRANT
-    # --------------------------------------------------------
-
     if response_type == "PRIORITY_GRANT":
-        priority_player = response["priority_player"]
-
-        # IMPORTANT:
-        #
-        # Do NOT use response["seq_num"] here.
-        #
-        # That value is the server's outgoing message sequence.
-        # The client's next PRIORITY_PASS sequence is tracked
-        # independently with next_priority_action_seq.
-
+        priority_player = response.get("player_id")
         server_seq = response.get("seq_num")
 
         print(
             f"Priority is now {priority_player}; "
             f"server seq={server_seq}; "
-            f"client action seq={next_priority_action_seq}"
+            f"client action seq={server_seq}"
         )
 
         sock = (
@@ -345,21 +345,16 @@ while True:
         send_priority_pass(
             sock,
             priority_player,
-            next_priority_action_seq,
+            server_seq,
         )
 
         print(
             f"DEBUG: sent priority pass with "
-            f"client seq={next_priority_action_seq}"
+            f"client seq={server_seq}"
         )
 
-        next_priority_action_seq += 1
-
+        last_priority_action_sent = server_seq
         continue
-
-    # --------------------------------------------------------
-    # UNEXPECTED RESPONSE
-    # --------------------------------------------------------
 
     if response_type == "ERROR":
         raise RuntimeError(
