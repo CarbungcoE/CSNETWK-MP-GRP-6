@@ -12,7 +12,7 @@ class Dispatcher:
     Game rules remain inside GameSession and its underlying systems.
     """
 
-    # Client messages that require the current priority sequence number.
+    # These messages use the PRIORITY sequence-number domain.
     PRIORITY_MESSAGES = {
         "PRIORITY_PASS",
         "CAST_SPELL",
@@ -41,17 +41,6 @@ class Dispatcher:
         if not message_type:
             return self._error("MISSING_MESSAGE_TYPE")
 
-        # Validate the priority token before processing any
-        # priority-bearing client action.
-        if message_type in self.PRIORITY_MESSAGES:
-            error = self._validate_priority(
-                player_id,
-                message,
-            )
-
-            if error is not None:
-                return error
-
         handler = {
             "PLAYER_READY": self.handle_player_ready,
             "MULLIGAN_CHOICE": self.handle_mulligan,
@@ -78,6 +67,14 @@ class Dispatcher:
                 message_type=message_type,
             )
 
+        # --------------------------------------------------------------
+        # MULLIGAN
+        # --------------------------------------------------------------
+        #
+        # Mulligan does NOT use the priority sequence.
+        #
+        # It echoes the authoritative GAME_STATE_UPDATE sequence.
+        #
         if message_type == "MULLIGAN_CHOICE":
             error = self._validate_mulligan(
                 player_id,
@@ -87,6 +84,9 @@ class Dispatcher:
             if error is not None:
                 return error
 
+        # --------------------------------------------------------------
+        # PRIORITY ACTIONS
+        # --------------------------------------------------------------
         elif message_type in self.PRIORITY_MESSAGES:
             error = self._validate_priority(
                 player_id,
@@ -101,6 +101,7 @@ class Dispatcher:
                 player_id,
                 message,
             )
+
         except ValueError as exc:
             return self._error(
                 "INVALID_REQUEST",
@@ -117,7 +118,7 @@ class Dispatcher:
         message: dict[str, Any],
     ) -> dict[str, Any] | None:
         """
-        Validate the player's current priority and sequence number.
+        Validate the player's current priority and priority token.
         """
         session = self._get_player_session(player_id)
 
@@ -125,22 +126,74 @@ class Dispatcher:
             return self._error("NOT_IN_GAME")
 
         if not session.has_priority(player_id):
-            return self._error("NOT_PRIORITY_PLAYER")
+            return self._error(
+                "NOT_PRIORITY_PLAYER"
+            )
 
         seq_num = message.get("seq_num")
 
         if seq_num is None:
-            return self._error("MISSING_SEQUENCE_NUMBER")
+            return self._error(
+                "MISSING_SEQUENCE_NUMBER"
+            )
 
         try:
             seq_num = int(seq_num)
         except (TypeError, ValueError):
-            return self._error("INVALID_SEQUENCE_NUMBER")
+            return self._error(
+                "INVALID_SEQUENCE_NUMBER"
+            )
 
-        if not session.validate_priority_seq_num(seq_num):
+        if not session.validate_priority_seq_num(
+            seq_num
+        ):
             return self._error(
                 "STALE_ACTION",
                 expected_seq_num=session.get_priority_seq_num(),
+                received_seq_num=seq_num,
+            )
+
+        return None
+
+    def _validate_mulligan(
+        self,
+        player_id: str,
+        message: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """
+        Validate a MULLIGAN_CHOICE sequence number.
+
+        Mulligan uses the server GAME_STATE_UPDATE sequence.
+        It does NOT use the priority sequence.
+        """
+        session = self._get_player_session(player_id)
+
+        if session is None:
+            return self._error("NOT_IN_GAME")
+
+        if session.state.phase != "MULLIGAN":
+            return self._error("WRONG_PHASE")
+
+        seq_num = message.get("seq_num")
+
+        if seq_num is None:
+            return self._error(
+                "MISSING_SEQUENCE_NUMBER"
+            )
+
+        try:
+            seq_num = int(seq_num)
+        except (TypeError, ValueError):
+            return self._error(
+                "INVALID_SEQUENCE_NUMBER"
+            )
+
+        expected = session.state.server_seq_num
+
+        if seq_num != expected:
+            return self._error(
+                "STALE_ACTION",
+                expected_seq_num=expected,
                 received_seq_num=seq_num,
             )
 
@@ -161,7 +214,9 @@ class Dispatcher:
         session_id = message.get("session_id")
 
         if not session_id:
-            return self._error("MISSING_SESSION_ID")
+            return self._error(
+                "MISSING_SESSION_ID"
+            )
 
         try:
             session = self.server.get_or_create_session(
@@ -170,8 +225,6 @@ class Dispatcher:
         except ValueError as exc:
             return self._error(str(exc))
 
-        # Associate the connection-level player identity
-        # with this GameServer session.
         if player_id not in self.server.player_sessions:
             try:
                 self.server.join_session(
@@ -180,6 +233,7 @@ class Dispatcher:
                 )
             except ValueError as exc:
                 return self._error(str(exc))
+
         elif (
             self.server.player_sessions[player_id]
             != session_id
@@ -226,7 +280,9 @@ class Dispatcher:
         keep = message.get("keep")
 
         if keep is None:
-            return self._error("MISSING_MULLIGAN_CHOICE")
+            return self._error(
+                "MISSING_MULLIGAN_CHOICE"
+            )
 
         cards_to_bottom = message.get(
             "cards_to_bottom",
@@ -263,7 +319,9 @@ class Dispatcher:
         session = self._get_player_session(player_id)
 
         if session is None:
-            return self._error("NOT_IN_GAME")
+            return self._error(
+                "NOT_IN_GAME"
+            )
 
         next_player = session.pass_priority()
 
@@ -288,7 +346,9 @@ class Dispatcher:
         session = self._get_player_session(player_id)
 
         if session is None:
-            return self._error("NOT_IN_GAME")
+            return self._error(
+                "NOT_IN_GAME"
+            )
 
         attackers = message.get(
             "attackers",
@@ -319,7 +379,9 @@ class Dispatcher:
         session = self._get_player_session(player_id)
 
         if session is None:
-            return self._error("NOT_IN_GAME")
+            return self._error(
+                "NOT_IN_GAME"
+            )
 
         blockers = message.get(
             "blockers",
@@ -346,26 +408,28 @@ class Dispatcher:
     ) -> Any:
         """
         Process ASSIGN_DAMAGE_ORDER.
-
-        The actual damage-order rules will be implemented by
-        CombatSystem once that interface is finalized.
         """
         session = self._get_player_session(player_id)
 
         if session is None:
-            return self._error("NOT_IN_GAME")
+            return self._error(
+                "NOT_IN_GAME"
+            )
 
-        damage_order = message.get("damage_order")
+        damage_order = message.get(
+            "damage_order"
+        )
 
         if damage_order is None:
-            return self._error("MISSING_DAMAGE_ORDER")
+            return self._error(
+                "MISSING_DAMAGE_ORDER"
+            )
 
-        # TODO:
-        # Wire this into CombatSystem when the damage-order
-        # interface is finalized.
         return self._error(
             "NOT_IMPLEMENTED",
-            detail="Damage ordering is not implemented yet.",
+            detail=(
+                "Damage ordering is not implemented yet."
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -377,12 +441,6 @@ class Dispatcher:
         player_id: str,
         message: dict[str, Any],
     ) -> Any:
-        """
-        Process DISCARD.
-
-        The discard rules will be connected to GameLifecycle once
-        the corresponding protocol flow is finalized.
-        """
         return self._error(
             "NOT_IMPLEMENTED",
             detail="Discard handling is not implemented yet.",
@@ -393,16 +451,13 @@ class Dispatcher:
         player_id: str,
         message: dict[str, Any],
     ) -> Any:
-        """
-        Process CONCEDE.
-        """
         session = self._get_player_session(player_id)
 
         if session is None:
-            return self._error("NOT_IN_GAME")
+            return self._error(
+                "NOT_IN_GAME"
+            )
 
-        # Wire to GameLifecycle/GameSession once the concession
-        # state transition is finalized.
         return self._error(
             "NOT_IMPLEMENTED",
             detail="Concede handling is not implemented yet.",
@@ -413,9 +468,6 @@ class Dispatcher:
         player_id: str,
         message: dict[str, Any],
     ) -> Any:
-        """
-        Process CAST_SPELL.
-        """
         return self._error(
             "NOT_IMPLEMENTED",
             detail="Spell casting is not implemented yet.",
@@ -426,9 +478,6 @@ class Dispatcher:
         player_id: str,
         message: dict[str, Any],
     ) -> Any:
-        """
-        Process ACTIVATE_ABILITY.
-        """
         return self._error(
             "NOT_IMPLEMENTED",
             detail="Ability activation is not implemented yet.",
@@ -439,9 +488,6 @@ class Dispatcher:
         player_id: str,
         message: dict[str, Any],
     ) -> Any:
-        """
-        Process PLAY_LAND.
-        """
         return self._error(
             "NOT_IMPLEMENTED",
             detail="Land playing is not implemented yet.",
@@ -452,9 +498,6 @@ class Dispatcher:
         player_id: str,
         message: dict[str, Any],
     ) -> Any:
-        """
-        Process TRIGGER_ORDER_RESPONSE.
-        """
         return self._error(
             "NOT_IMPLEMENTED",
             detail="Trigger ordering is not implemented yet.",
@@ -465,9 +508,6 @@ class Dispatcher:
         player_id: str,
         message: dict[str, Any],
     ) -> Any:
-        """
-        Process TRIGGER_CHOICE_RESPONSE.
-        """
         return self._error(
             "NOT_IMPLEMENTED",
             detail="Trigger choice handling is not implemented yet.",
@@ -484,7 +524,9 @@ class Dispatcher:
         """
         Return the GameSession associated with a player.
         """
-        return self.server.get_player_session(player_id)
+        return self.server.get_player_session(
+            player_id
+        )
 
     @staticmethod
     def _error(
@@ -499,38 +541,3 @@ class Dispatcher:
             "error": code,
             **extra,
         }
-
-    def _validate_mulligan(
-        self,
-        player_id: str,
-        message: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        """
-        Validate a MULLIGAN_CHOICE sequence number.
-
-        Mulligan choices use the authoritative sequence number,
-        but do not require the player to have priority.
-        """
-        session = self._get_player_session(player_id)
-
-        if session is None:
-            return self._error("NOT_IN_GAME")
-
-        seq_num = message.get("seq_num")
-
-        if seq_num is None:
-            return self._error("MISSING_SEQUENCE_NUMBER")
-
-        try:
-            seq_num = int(seq_num)
-        except (TypeError, ValueError):
-            return self._error("INVALID_SEQUENCE_NUMBER")
-
-        if not session.validate_priority_seq_num(seq_num):
-            return self._error(
-                "STALE_ACTION",
-                expected_seq_num=session.get_priority_seq_num(),
-                received_seq_num=seq_num,
-            )
-
-        return None

@@ -160,7 +160,10 @@ class MTGNPServer:
 
                 if response is not None:
                     client_info["player_id"] = player_id
-                    self._send_response(conn, response)
+                    self._send_response(
+                        conn,
+                        response,
+                    )
 
                 return
 
@@ -225,6 +228,25 @@ class MTGNPServer:
 
         if "seq_num" not in pdu:
             self.server_seq_num += 1
+
+        # GAME_STATE_UPDATE carries the authoritative server
+        # sequence number that clients must echo for actions
+        # such as MULLIGAN_CHOICE.
+        if response.get("type") == "GAME_STATE_UPDATE":
+            client_info = self.clients.get(conn)
+
+            if client_info is not None:
+                player_id = client_info.get("player_id")
+
+                if player_id:
+                    session = self.game_server.get_player_session(
+                        player_id
+                    )
+
+                    if session is not None:
+                        session.state.server_seq_num = (
+                            response["seq_num"]
+                        )
 
         send_pdu(
             conn,

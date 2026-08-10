@@ -193,10 +193,6 @@ class GameLifecycle:
 
             player.kept_hand = True
 
-        # Both players have now kept their hands.
-        if self.is_mulligan_complete():
-            self.start_game()
-
         return True, ""
 
     def is_mulligan_complete(self) -> bool:
