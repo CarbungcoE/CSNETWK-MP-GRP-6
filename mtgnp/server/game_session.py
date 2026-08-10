@@ -106,16 +106,70 @@ class GameSession:
         )
 
     def pass_priority(self):
-        self.state.consecutive_passes += 1
+        """
+        Record a priority pass and advance the phase after all players
+        have passed consecutively.
+
+        Returns a result dictionary so the socket layer can distinguish
+        a normal priority transfer from a phase transition.
+        """
+        if self.state.game_over:
+            raise ValueError(
+                "Cannot pass priority after game over"
+            )
+
+        if self.state.priority_player is None:
+            raise ValueError(
+                "Cannot pass priority when nobody has priority"
+            )
 
         player_count = len(self.state.players)
 
-        if self.state.consecutive_passes >= player_count:
-            self.state.consecutive_passes = 0
-            self.advance_phase()
-            return self.state.priority_player
+        if player_count == 0:
+            raise ValueError(
+                "Cannot pass priority without players"
+            )
 
-        return self.priority.pass_priority()
+        self.state.consecutive_passes += 1
+
+        # Normal pass: transfer priority to the other player.
+        if self.state.consecutive_passes < player_count:
+            next_player = self.priority.pass_priority()
+
+            return {
+                "advanced": False,
+                "priority_player": next_player,
+                "priority_seq_num": self.state.priority_seq_num,
+            }
+
+        # All players passed. Advance through any automatic
+        # phases/steps until the next priority-bearing phase.
+        self.state.consecutive_passes = 0
+
+        transitions = []
+
+        while True:
+            from_phase = self.state.phase
+            to_phase = self.turn.advance_phase()
+
+            transitions.append({
+                "from_phase": from_phase,
+                "to_phase": to_phase,
+            })
+
+            if self.turn.requires_priority():
+                self.grant_active_player_priority()
+                break
+
+        return {
+            "advanced": True,
+            "transitions": transitions,
+            "priority_player": self.state.priority_player,
+            "priority_seq_num": self.state.priority_seq_num,
+            "phase": self.state.phase,
+            "turn": self.state.turn,
+            "active_player": self.state.active_player,
+        }
 
     def grant_active_player_priority(self):
         return self.priority.grant_active_player_priority()

@@ -3,7 +3,11 @@ import select
 
 from mtgnp.common.framing import send_pdu, recv_pdu
 from mtgnp.common.logger import VerboseLogger
-from mtgnp.common.pdu import build_pong, build_error
+from mtgnp.common.pdu import (
+    build_pong,
+    build_error,
+    build_phase_transition,
+)
 
 from mtgnp.server.game_server import GameServer
 from mtgnp.server.dispatcher import Dispatcher
@@ -290,10 +294,34 @@ class MTGNPServer:
             )
 
             if response is not None:
-                self._send_response(
-                    conn,
-                    response,
-                )
+                if response.get("type") == "PRIORITY_PHASE_ADVANCED":
+                    session = self.game_server.get_player_session(
+                        player_id
+                    )
+
+                    if session is not None:
+                        # Broadcast each phase transition, including any
+                        # automatic phases skipped without priority.
+                        for transition in response.get("transitions", []):
+                            self.broadcast(
+                                build_phase_transition(
+                                    0,
+                                    transition["from_phase"],
+                                    transition["to_phase"],
+                                    session.state.active_player,
+                                    session.state.turn,
+                                )
+                            )
+
+                        # The new priority window is authoritative. Send
+                        # personalized state to both players so either
+                        # client can continue the priority sequence.
+                        self._broadcast_game_state(session)
+                else:
+                    self._send_response(
+                        conn,
+                        response,
+                    )
 
             # --------------------------------------------------------
             # MULLIGAN -> FIRST TURN
@@ -492,8 +520,21 @@ class MTGNPServer:
         # ------------------------------------------------------------
 
         elif response.get("type") == "PRIORITY_GRANT":
-            # Keep the authoritative priority sequence number.
-            pass
+            # PRIORITY_GRANT is sent only to the player who now holds
+            # priority. The seq_num here is the authoritative priority
+            # token and must not be replaced by the transport sequence.
+            target_player_id = response.get("priority_player")
+
+            if target_player_id is not None:
+                target_conn = None
+
+                for candidate_conn, info in self.clients.items():
+                    if info.get("player_id") == target_player_id:
+                        target_conn = candidate_conn
+                        break
+
+                if target_conn is not None:
+                    conn = target_conn
 
         else:
             response["seq_num"] = self._next_server_seq()

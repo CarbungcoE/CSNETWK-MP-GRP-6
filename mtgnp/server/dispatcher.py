@@ -381,12 +381,23 @@ class Dispatcher:
                 "NOT_IN_GAME"
             )
 
-        next_player = session.pass_priority()
+        result = session.pass_priority()
+
+        if result.get("advanced"):
+            return {
+                "type": "PRIORITY_PHASE_ADVANCED",
+                "transitions": result.get("transitions", []),
+                "priority_player": result.get("priority_player"),
+                "priority_seq_num": result.get("priority_seq_num"),
+                "phase": result.get("phase"),
+                "turn": result.get("turn"),
+                "active_player": result.get("active_player"),
+            }
 
         return {
             "type": "PRIORITY_GRANT",
-            "priority_player": next_player,
-            "seq_num": session.get_priority_seq_num(),
+            "priority_player": result.get("priority_player"),
+            "seq_num": result.get("priority_seq_num"),
         }
 
     # ------------------------------------------------------------------
