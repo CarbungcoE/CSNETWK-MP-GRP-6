@@ -14,7 +14,6 @@ class GameState:
     active_player: str | None = None
     priority_player: str | None = None
     consecutive_passes: int = 0
-<<<<<<< HEAD
     phase_action_seq: int = 0
     phase_decision_complete: bool = False
     pending_discard_seq: dict[str, int] = field(default_factory=dict)
@@ -23,8 +22,6 @@ class GameState:
     pending_trigger_choice_seq: dict[str, int] = field(default_factory=dict)
     pending_trigger_order_seq: dict[str, int] = field(default_factory=dict)
     exiled: dict[str, list] = field(default_factory=dict)
-=======
->>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
 
     # Sequence number of the latest authoritative
     # GAME_STATE_UPDATE sent by the server.

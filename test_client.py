@@ -268,12 +268,7 @@ current_state = None
 priority_player = None
 priority_seq = None
 
-<<<<<<< HEAD
 # Priority actions MUST echo the latest PRIORITY_GRANT seq_num.
-=======
-# Client action sequence is authoritative for PRIORITY_PASS.
-next_priority_action_seq = 1
->>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
 last_priority_action_sent = 0
 
 while True:
@@ -303,25 +298,13 @@ while True:
             break
 
         if priority_player is not None:
-<<<<<<< HEAD
             current_priority_seq = current_state.get("priority_seq_num", 0)
-=======
-            current_priority_seq = current_state.get(
-                "priority_seq_num",
-                next_priority_action_seq,
-            )
->>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
 
             # Both clients receive the same GAME_STATE_UPDATE. Only
             # send one pass for each authoritative priority token.
             if current_priority_seq <= last_priority_action_sent:
                 continue
 
-<<<<<<< HEAD
-=======
-            next_priority_action_seq = current_priority_seq
-
->>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
             sock = (
                 player1
                 if priority_player == "player_1"
@@ -339,21 +322,12 @@ while True:
                 f"client seq={server_seq}"
             )
 
-<<<<<<< HEAD
             last_priority_action_sent = current_priority_seq
-=======
-            last_priority_action_sent = next_priority_action_seq
-            next_priority_action_seq += 1
->>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
 
         continue
 
     if response_type == "PRIORITY_GRANT":
-<<<<<<< HEAD
         priority_player = response.get("player_id")
-=======
-        priority_player = response.get("priority_player")
->>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
         server_seq = response.get("seq_num")
 
         print(
@@ -379,12 +353,7 @@ while True:
             f"client seq={server_seq}"
         )
 
-<<<<<<< HEAD
         last_priority_action_sent = server_seq
-=======
-        last_priority_action_sent = next_priority_action_seq
-        next_priority_action_seq += 1
->>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
         continue
 
     if response_type == "ERROR":

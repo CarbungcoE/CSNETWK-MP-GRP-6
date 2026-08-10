@@ -453,10 +453,6 @@ class Dispatcher:
                 "turn": result.get("turn"),
                 "active_player": result.get("active_player"),
             }
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
->>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
 
         if result.get("stack_resolved"):
             return {
@@ -469,11 +465,6 @@ class Dispatcher:
                 "turn": result.get("turn"),
                 "active_player": result.get("active_player"),
             }
-<<<<<<< HEAD
-=======
-=======
->>>>>>> 979dab4927d958bbfeba6ba88cf8fd8de7fcae04
->>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
 
         return {
             "type": "PRIORITY_GRANT",
@@ -586,33 +577,7 @@ class Dispatcher:
     ) -> Any:
         session = self._get_player_session(player_id)
         if session is None:
-<<<<<<< HEAD
             return self._error("ILLEGAL_ACTION")
-=======
-            return self._error("NOT_IN_GAME")
-
-        card_id = message.get("card_id")
-        if not card_id:
-            return self._error("MISSING_CARD_ID")
-
-        targets = message.get("targets", [])
-        mana_payment = message.get("mana_payment", {})
-
-        try:
-            result = session.cast_spell(
-                player_id,
-                card_id,
-                targets,
-                mana_payment,
-            )
-        except ValueError as exc:
-            return self._error(str(exc))
-
-        return {
-            "type": "SPELL_CAST",
-            **result,
-        }
->>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
 
         card_id = message.get("card_id")
         if not card_id:
@@ -652,37 +617,6 @@ class Dispatcher:
         message: dict[str, Any],
     ) -> Any:
         session = self._get_player_session(player_id)
-<<<<<<< HEAD
-=======
-
-        if session is None:
-            return self._error(
-                "NOT_IN_GAME"
-            )
-
-        card_id = message.get("card_id")
-
-        if not card_id:
-            return self._error(
-                "MISSING_CARD_ID"
-            )
-
-        try:
-            result = session.play_land(
-                player_id,
-                card_id,
-            )
-        except ValueError as exc:
-            return self._error(
-                str(exc),
-            )
-
-        return {
-            "type": "LAND_PLAYED",
-            "player_id": result["player_id"],
-            "card_id": result["card_id"],
-        }
->>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
 
         if session is None:
             return self._error(
