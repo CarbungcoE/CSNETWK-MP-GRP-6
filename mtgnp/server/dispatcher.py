@@ -272,6 +272,7 @@ class Dispatcher:
         """
         Process MULLIGAN_CHOICE.
         """
+
         session = self._get_player_session(player_id)
 
         if session is None:
@@ -280,9 +281,7 @@ class Dispatcher:
         keep = message.get("keep")
 
         if keep is None:
-            return self._error(
-                "MISSING_MULLIGAN_CHOICE"
-            )
+            return self._error("MISSING_MULLIGAN_CHOICE")
 
         cards_to_bottom = message.get(
             "cards_to_bottom",
