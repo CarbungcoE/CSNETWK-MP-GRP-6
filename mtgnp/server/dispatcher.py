@@ -381,12 +381,35 @@ class Dispatcher:
                 "NOT_IN_GAME"
             )
 
-        next_player = session.pass_priority()
+        result = session.pass_priority()
+
+        if result.get("advanced"):
+            return {
+                "type": "PRIORITY_PHASE_ADVANCED",
+                "transitions": result.get("transitions", []),
+                "priority_player": result.get("priority_player"),
+                "priority_seq_num": result.get("priority_seq_num"),
+                "phase": result.get("phase"),
+                "turn": result.get("turn"),
+                "active_player": result.get("active_player"),
+            }
+
+        if result.get("stack_resolved"):
+            return {
+                "type": "STACK_PRIORITY_RESOLVED",
+                "stack_resolved": True,
+                "resolved": result.get("resolved", {}),
+                "priority_player": result.get("priority_player"),
+                "priority_seq_num": result.get("priority_seq_num"),
+                "phase": result.get("phase"),
+                "turn": result.get("turn"),
+                "active_player": result.get("active_player"),
+            }
 
         return {
             "type": "PRIORITY_GRANT",
-            "priority_player": next_player,
-            "seq_num": session.get_priority_seq_num(),
+            "priority_player": result.get("priority_player"),
+            "seq_num": result.get("priority_seq_num"),
         }
 
     # ------------------------------------------------------------------
@@ -526,10 +549,31 @@ class Dispatcher:
         player_id: str,
         message: dict[str, Any],
     ) -> Any:
-        return self._error(
-            "NOT_IMPLEMENTED",
-            detail="Spell casting is not implemented yet.",
-        )
+        session = self._get_player_session(player_id)
+        if session is None:
+            return self._error("NOT_IN_GAME")
+
+        card_id = message.get("card_id")
+        if not card_id:
+            return self._error("MISSING_CARD_ID")
+
+        targets = message.get("targets", [])
+        mana_payment = message.get("mana_payment", {})
+
+        try:
+            result = session.cast_spell(
+                player_id,
+                card_id,
+                targets,
+                mana_payment,
+            )
+        except ValueError as exc:
+            return self._error(str(exc))
+
+        return {
+            "type": "SPELL_CAST",
+            **result,
+        }
 
     def handle_activate_ability(
         self,
@@ -546,10 +590,35 @@ class Dispatcher:
         player_id: str,
         message: dict[str, Any],
     ) -> Any:
-        return self._error(
-            "NOT_IMPLEMENTED",
-            detail="Land playing is not implemented yet.",
-        )
+        session = self._get_player_session(player_id)
+
+        if session is None:
+            return self._error(
+                "NOT_IN_GAME"
+            )
+
+        card_id = message.get("card_id")
+
+        if not card_id:
+            return self._error(
+                "MISSING_CARD_ID"
+            )
+
+        try:
+            result = session.play_land(
+                player_id,
+                card_id,
+            )
+        except ValueError as exc:
+            return self._error(
+                str(exc),
+            )
+
+        return {
+            "type": "LAND_PLAYED",
+            "player_id": result["player_id"],
+            "card_id": result["card_id"],
+        }
 
     def handle_trigger_order_response(
         self,

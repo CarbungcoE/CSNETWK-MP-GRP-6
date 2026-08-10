@@ -3,6 +3,7 @@ from typing import Dict, Any, Tuple
 
 from .game_state import GameState
 from .player import PlayerState
+from .card_catalog import CardCatalog
 
 
 class GameLifecycle:
@@ -13,6 +14,7 @@ class GameLifecycle:
 
     def __init__(self, state: GameState):
         self.state = state
+        self.cards = CardCatalog()
 
     def process_player_ready(
         self,
@@ -38,8 +40,11 @@ class GameLifecycle:
         ):
             return False, "GAME_FULL", {}
 
-        # Validate deck size.
-        if not (1 <= len(deck_list) <= 50):
+        # Validate deck size and every card instance against the
+        # authoritative fixed card list.
+        if not isinstance(deck_list, list) or not (1 <= len(deck_list) <= 50):
+            return False, "ILLEGAL_DECK", {}
+        if any(not self.cards.is_known_instance(card_id) for card_id in deck_list):
             return False, "ILLEGAL_DECK", {}
 
         # Register or update player.
@@ -253,6 +258,7 @@ class GameLifecycle:
             "active_player": self.state.active_player,
             "priority_player": self.state.priority_player,
             "priority_seq_num": self.state.priority_seq_num,
+            "land_played_this_turn": target_player.land_played_this_turn,
             "life_totals": {
                 pid: player.life
                 for pid, player in self.state.players.items()

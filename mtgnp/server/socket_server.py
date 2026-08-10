@@ -3,7 +3,11 @@ import select
 
 from mtgnp.common.framing import send_pdu, recv_pdu
 from mtgnp.common.logger import VerboseLogger
-from mtgnp.common.pdu import build_pong, build_error
+from mtgnp.common.pdu import (
+    build_pong,
+    build_error,
+    build_phase_transition,
+)
 
 from mtgnp.server.game_server import GameServer
 from mtgnp.server.dispatcher import Dispatcher
@@ -290,10 +294,114 @@ class MTGNPServer:
             )
 
             if response is not None:
-                self._send_response(
-                    conn,
-                    response,
-                )
+                if response.get("type") == "SPELL_CAST":
+                    session = self.game_server.get_player_session(player_id)
+                    if session is not None:
+                        from mtgnp.common.pdu import build_stack_push
+                        self.broadcast(
+                            build_stack_push(
+                                0,
+                                response["stack_item_id"],
+                                response["item_type"],
+                                response["source"],
+                                response["targets"],
+                                response["controller"],
+                            )
+                        )
+                        self._broadcast_game_state(session)
+                        self._send_response(
+                            conn,
+                            {
+                                "type": "PRIORITY_GRANT",
+                                "priority_player": player_id,
+                                "seq_num": session.get_priority_seq_num(),
+                            },
+                        )
+
+                elif response.get("type") == "LAND_PLAYED":
+                    session = self.game_server.get_player_session(
+                        player_id
+                    )
+
+                    if session is not None:
+                        # PLAY_LAND bypasses the stack. The Active Player
+                        # keeps priority, so broadcast the updated state
+                        # and then issue a fresh priority token.
+                        self._broadcast_game_state(session)
+                        session.grant_active_player_priority()
+                        self._send_response(
+                            conn,
+                            {
+                                "type": "PRIORITY_GRANT",
+                                "priority_player": player_id,
+                                "seq_num": session.get_priority_seq_num(),
+                            },
+                        )
+
+                elif response.get("type") == "STACK_PRIORITY_RESOLVED":
+                    session = self.game_server.get_player_session(player_id)
+                    if session is not None:
+                        from mtgnp.common.pdu import build_stack_resolve, build_game_over
+                        resolved = response.get("resolved", {})
+                        self.broadcast(
+                            build_stack_resolve(
+                                0,
+                                resolved.get("stack_item_id"),
+                                resolved.get("result", "FIZZLE"),
+                                resolved.get("state_changes", []),
+                            )
+                        )
+                        self._broadcast_game_state(session)
+
+                        if session.state.game_over:
+                            loser = next((pid for pid, p in session.state.players.items() if p.life <= 0), None)
+                            winner = session.state.winner
+                            self.broadcast(
+                                build_game_over(
+                                    0,
+                                    winner,
+                                    loser,
+                                    session.state.game_over_reason or "LIFE_ZERO",
+                                )
+                            )
+                        else:
+                            self._send_response(
+                                conn,
+                                {
+                                    "type": "PRIORITY_GRANT",
+                                    "priority_player": response.get("priority_player"),
+                                    "seq_num": response.get("priority_seq_num"),
+                                },
+                            )
+
+                elif response.get("type") == "PRIORITY_PHASE_ADVANCED":
+                    session = self.game_server.get_player_session(
+                        player_id
+                    )
+
+                    if session is not None:
+                        # Broadcast each phase transition, including any
+                        # automatic phases skipped without priority.
+                        for transition in response.get("transitions", []):
+                            self.broadcast(
+                                build_phase_transition(
+                                    0,
+                                    transition["from_phase"],
+                                    transition["to_phase"],
+                                    session.state.active_player,
+                                    session.state.turn,
+                                )
+                            )
+
+                        # The new priority window is authoritative. Send
+                        # personalized state to both players so either
+                        # client can continue the priority sequence.
+                        self._broadcast_game_state(session)
+                else:
+                    self._send_response(
+                        conn,
+                        response,
+                    )
 
             # --------------------------------------------------------
             # MULLIGAN -> FIRST TURN
@@ -321,18 +429,39 @@ class MTGNPServer:
 
                 if session is not None and session.is_mulligan_complete():
                     try:
-                        session.start_game()
+                        transitions = session.start_game()
 
-                        # UNTAP is an automatic phase with no priority.
-                        # Advance to the first priority-bearing phase.
+                        # Broadcast the authoritative transition into UNTAP.
+                        for transition in transitions or []:
+                            self.broadcast(
+                                build_phase_transition(
+                                    0,
+                                    transition["from_phase"],
+                                    transition["to_phase"],
+                                    session.state.active_player,
+                                    session.state.turn,
+                                )
+                            )
+
+                        # UNTAP is automatic and receives no priority.
+                        # Advance immediately to UPKEEP, then open priority.
                         if session.state.phase == "UNTAP":
-                            session.advance_phase()
+                            from_phase = session.state.phase
+                            to_phase = session.advance_phase()
+                            self.broadcast(
+                                build_phase_transition(
+                                    0,
+                                    from_phase,
+                                    to_phase,
+                                    session.state.active_player,
+                                    session.state.turn,
+                                )
+                            )
 
-                        # UPKEEP is the first phase where priority is
-                        # required. Grant it to the active player.
                         if (
                             session.state.phase == "UPKEEP"
                             and session.state.priority_player is None
+                            and not session.state.game_over
                         ):
                             session.grant_active_player_priority()
 
@@ -492,8 +621,21 @@ class MTGNPServer:
         # ------------------------------------------------------------
 
         elif response.get("type") == "PRIORITY_GRANT":
-            # Keep the authoritative priority sequence number.
-            pass
+            # PRIORITY_GRANT is sent only to the player who now holds
+            # priority. The seq_num here is the authoritative priority
+            # token and must not be replaced by the transport sequence.
+            target_player_id = response.get("priority_player")
+
+            if target_player_id is not None:
+                target_conn = None
+
+                for candidate_conn, info in self.clients.items():
+                    if info.get("player_id") == target_player_id:
+                        target_conn = candidate_conn
+                        break
+
+                if target_conn is not None:
+                    conn = target_conn
 
         else:
             response["seq_num"] = self._next_server_seq()
