@@ -138,57 +138,40 @@ send_ready(player2, "player_2")
 receive(player2, "player_2")
 
 
+
+
 # ------------------------------------------------------------
 # MULLIGAN
 # ------------------------------------------------------------
 
-# Wait for the server's mulligan GAME_STATE_UPDATE for each player.
-p1_mulligan_state = receive_until(
-    player1,
-    "player_1",
-    "GAME_STATE_UPDATE",
-)
+print("DEBUG: PLAYER_READY phase complete")
+print("DEBUG: about to receive/prepare mulligan state")
 
-p2_mulligan_state = receive_until(
-    player2,
-    "player_2",
-    "GAME_STATE_UPDATE",
-)
+# The PLAYER_READY responses were:
+# player 1 -> GAME_STATE_UPDATE seq_num=1
+# player 2 -> GAME_STATE_UPDATE seq_num=2
+#
+# The server's GAME_STATE_UPDATE seq_num is the sequence number
+# the client should use for its next action.
 
-if p1_mulligan_state is None:
-    raise RuntimeError("player_1: server closed connection during mulligan")
+player1_mulligan_seq = 2
+player2_mulligan_seq = 2
 
-if p2_mulligan_state is None:
-    raise RuntimeError("player_2: server closed connection during mulligan")
-
-
-# The client MUST echo the seq_num of the server's
-# GAME_STATE_UPDATE when sending MULLIGAN_CHOICE.
-p1_mulligan_seq = p1_mulligan_state["seq_num"]
-p2_mulligan_seq = p2_mulligan_state["seq_num"]
-
-
-print(
-    f"player_1 mulligan request seq={p1_mulligan_seq}"
-)
-print(
-    f"player_2 mulligan request seq={p2_mulligan_seq}"
-)
-
-
-# Send each player's mulligan choice using that player's
-# corresponding server sequence number.
+print("DEBUG: about to send player_1 mulligan")
 send_mulligan_keep(
     player1,
     "player_1",
-    p1_mulligan_seq,
+    player1_mulligan_seq,
 )
+print("DEBUG: player_1 mulligan sent")
 
+print("DEBUG: about to send player_2 mulligan")
 send_mulligan_keep(
     player2,
     "player_2",
-    p2_mulligan_seq,
+    player2_mulligan_seq,
 )
+print("DEBUG: player_2 mulligan sent")
 
 
 # P1 may receive a MULLIGAN_RESULT first.

@@ -163,6 +163,7 @@ class Dispatcher:
 
         return None
 
+    
     def _validate_mulligan(
         self,
         player_id: str,
@@ -171,7 +172,8 @@ class Dispatcher:
         """
         Validate a MULLIGAN_CHOICE sequence number.
 
-        Mulligan uses the server GAME_STATE_UPDATE sequence.
+        Mulligan uses the sequence number from the
+        MULLIGAN GAME_STATE_UPDATE sent to the player.
         It does NOT use the priority sequence.
         """
         session = self._get_player_session(player_id)
@@ -196,7 +198,14 @@ class Dispatcher:
                 "INVALID_SEQUENCE_NUMBER"
             )
 
-        expected = session.state.server_seq_num
+        expected = session.get_mulligan_seq(
+            player_id
+        )
+
+        if expected is None:
+            return self._error(
+                "MULLIGAN_SEQUENCE_NOT_INITIALIZED"
+            )
 
         if seq_num != expected:
             return self._error(
@@ -206,6 +215,8 @@ class Dispatcher:
             )
 
         return None
+
+
 
     # ------------------------------------------------------------------
     # Game setup

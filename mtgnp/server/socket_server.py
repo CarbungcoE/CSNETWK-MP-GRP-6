@@ -173,6 +173,7 @@ class MTGNPServer:
             # PLAYER_READY
             # --------------------------------------------------------
 
+            # PLAYER_READY establishes the protocol-level identity.
             if pdu_type == "PLAYER_READY":
                 player_id = pdu.get("player_id")
 
@@ -190,17 +191,83 @@ class MTGNPServer:
                     pdu,
                 )
 
-                if response is not None:
-                    # PLAYER_READY successfully established the
-                    # connection-level player identity.
-                    client_info["player_id"] = player_id
+                if response is None:
+                    return
 
-                    self._send_response(
-                        conn,
-                        response,
-                    )
+                # Establish socket -> player identity.
+                client_info["player_id"] = player_id
+
+                # ------------------------------------------------------------
+                # If both players are now ready, the dispatcher response
+                # represents the transition into MULLIGAN.
+                #
+                # The MULLIGAN GAME_STATE_UPDATE must be sent to BOTH players
+                # using the SAME server sequence number.
+                # ------------------------------------------------------------
+
+                session = self.game_server.get_player_session(
+                    player_id
+                )
+
+                if (
+                    session is not None
+                    and session.state.phase == "MULLIGAN"
+                ):
+                    # One authoritative sequence number for the mulligan
+                    # state shared by both players.
+                    mulligan_seq = self.server_seq_num
+                    self.server_seq_num += 1
+
+                    for other_conn, other_info in list(
+                        self.clients.items()
+                    ):
+                        other_player_id = other_info.get(
+                            "player_id"
+                        )
+
+                        if other_player_id is None:
+                            continue
+
+                        state = session.get_visible_state(
+                            other_player_id
+                        )
+
+                        state["priority_holder"] = None
+
+                        # Store the exact sequence number that this player
+                        # must echo in MULLIGAN_CHOICE.
+                        session.set_mulligan_seq(
+                            other_player_id,
+                            mulligan_seq,
+                        )
+
+                        mulligan_pdu = {
+                            "type": "GAME_STATE_UPDATE",
+                            "seq_num": mulligan_seq,
+                            "state": state,
+                        }
+
+                        send_pdu(
+                            other_conn,
+                            mulligan_pdu,
+                        )
+
+                        self.logger.log_pdu(
+                            "S->C",
+                            mulligan_pdu,
+                        )
+
+                    return
+
+                # Normal PLAYER_READY response while still in LOBBY.
+                self._send_response(
+                    conn,
+                    response,
+                )
 
                 return
+
+
 
             # --------------------------------------------------------
             # ALL OTHER GAME ACTIONS
