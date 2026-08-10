@@ -13,6 +13,7 @@ class GameState:
     turn: int = 0
     active_player: str | None = None
     priority_player: str | None = None
+    consecutive_passes: int = 0
 
     # Sequence number of the latest authoritative
     # GAME_STATE_UPDATE sent by the server.
