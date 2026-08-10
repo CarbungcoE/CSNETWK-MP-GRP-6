@@ -393,6 +393,7 @@ class Dispatcher:
                 "turn": result.get("turn"),
                 "active_player": result.get("active_player"),
             }
+<<<<<<< HEAD
 
         if result.get("stack_resolved"):
             return {
@@ -405,6 +406,8 @@ class Dispatcher:
                 "turn": result.get("turn"),
                 "active_player": result.get("active_player"),
             }
+=======
+>>>>>>> 979dab4927d958bbfeba6ba88cf8fd8de7fcae04
 
         return {
             "type": "PRIORITY_GRANT",

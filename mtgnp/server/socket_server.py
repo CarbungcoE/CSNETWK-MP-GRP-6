@@ -294,6 +294,7 @@ class MTGNPServer:
             )
 
             if response is not None:
+<<<<<<< HEAD
                 if response.get("type") == "SPELL_CAST":
                     session = self.game_server.get_player_session(player_id)
                     if session is not None:
@@ -375,6 +376,9 @@ class MTGNPServer:
                             )
 
                 elif response.get("type") == "PRIORITY_PHASE_ADVANCED":
+=======
+                if response.get("type") == "PRIORITY_PHASE_ADVANCED":
+>>>>>>> 979dab4927d958bbfeba6ba88cf8fd8de7fcae04
                     session = self.game_server.get_player_session(
                         player_id
                     )

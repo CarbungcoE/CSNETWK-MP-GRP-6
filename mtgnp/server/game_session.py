@@ -110,26 +110,60 @@ class GameSession:
         )
 
     def pass_priority(self):
+<<<<<<< HEAD
         """Pass priority, resolve the stack when both players pass, or advance the step."""
         if self.state.game_over:
             raise ValueError("Cannot pass priority after game over")
         if self.state.priority_player is None:
             raise ValueError("Cannot pass priority when nobody has priority")
+=======
+        """
+        Record a priority pass and advance the phase after all players
+        have passed consecutively.
+
+        Returns a result dictionary so the socket layer can distinguish
+        a normal priority transfer from a phase transition.
+        """
+        if self.state.game_over:
+            raise ValueError(
+                "Cannot pass priority after game over"
+            )
+
+        if self.state.priority_player is None:
+            raise ValueError(
+                "Cannot pass priority when nobody has priority"
+            )
+>>>>>>> 979dab4927d958bbfeba6ba88cf8fd8de7fcae04
 
         player_count = len(self.state.players)
         if player_count == 0:
             raise ValueError("Cannot pass priority without players")
 
+<<<<<<< HEAD
         self.state.consecutive_passes += 1
 
         if self.state.consecutive_passes < player_count:
             next_player = self.priority.pass_priority()
+=======
+        if player_count == 0:
+            raise ValueError(
+                "Cannot pass priority without players"
+            )
+
+        self.state.consecutive_passes += 1
+
+        # Normal pass: transfer priority to the other player.
+        if self.state.consecutive_passes < player_count:
+            next_player = self.priority.pass_priority()
+
+>>>>>>> 979dab4927d958bbfeba6ba88cf8fd8de7fcae04
             return {
                 "advanced": False,
                 "priority_player": next_player,
                 "priority_seq_num": self.state.priority_seq_num,
             }
 
+<<<<<<< HEAD
         self.state.consecutive_passes = 0
 
         if not self.stack.is_empty():
@@ -156,6 +190,23 @@ class GameSession:
             from_phase = self.state.phase
             to_phase = self.turn.advance_phase()
             transitions.append({"from_phase": from_phase, "to_phase": to_phase})
+=======
+        # All players passed. Advance through any automatic
+        # phases/steps until the next priority-bearing phase.
+        self.state.consecutive_passes = 0
+
+        transitions = []
+
+        while True:
+            from_phase = self.state.phase
+            to_phase = self.turn.advance_phase()
+
+            transitions.append({
+                "from_phase": from_phase,
+                "to_phase": to_phase,
+            })
+
+>>>>>>> 979dab4927d958bbfeba6ba88cf8fd8de7fcae04
             if self.turn.requires_priority():
                 self.grant_active_player_priority()
                 break
