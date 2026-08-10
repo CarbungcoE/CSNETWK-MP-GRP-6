@@ -96,7 +96,10 @@ receive_until(player2, "player_2", "MULLIGAN_RESULT")
 socks = {player1: "player_1", player2: "player_2"}
 last_sent_seq = 0
 current_state = None
+<<<<<<< HEAD
 latest_states = {}
+=======
+>>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
 priority_player = None
 priority_seq = None
 
@@ -113,13 +116,17 @@ while True:
 
     if ptype == "GAME_STATE_UPDATE":
         current_state = pdu["state"]
+<<<<<<< HEAD
         latest_states[pid] = current_state
+=======
+>>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
         phase = current_state["phase"]
         priority_player = current_state.get("priority_player")
         priority_seq = current_state.get("priority_seq_num")
         print(f"STATE: phase={phase}, priority={priority_player}, seq={priority_seq}")
 
         if phase == "PRECOMBAT_MAIN":
+<<<<<<< HEAD
             active_id = current_state.get("active_player")
             if active_id in latest_states and latest_states[active_id].get("phase") == "PRECOMBAT_MAIN":
                 current_state = latest_states[active_id]
@@ -127,6 +134,17 @@ while True:
 
     elif ptype == "PRIORITY_GRANT":
         priority_player = pdu["player_id"]
+=======
+            break
+
+        if priority_player and priority_seq and priority_seq > last_sent_seq:
+            target = player1 if priority_player == "player_1" else player2
+            send_priority_pass(target, priority_player, priority_seq)
+            last_sent_seq = priority_seq
+
+    elif ptype == "PRIORITY_GRANT":
+        priority_player = pdu["priority_player"]
+>>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
         priority_seq = pdu["seq_num"]
         target = player1 if priority_player == "player_1" else player2
         send_priority_pass(target, priority_player, priority_seq)
@@ -136,7 +154,10 @@ while True:
         raise RuntimeError(f"Unexpected first-turn error: {pdu}")
 
 active = current_state["active_player"]
+<<<<<<< HEAD
 current_state = latest_states.get(active, current_state)
+=======
+>>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
 hand = current_state["hand"]
 lands = [c for c in hand if c.rsplit("_", 1)[0] in {"mountain", "forest", "plains", "island", "swamp"}]
 if not lands:
@@ -144,13 +165,21 @@ if not lands:
 
 card_id = lands[0]
 active_sock = player1 if active == "player_1" else player2
+<<<<<<< HEAD
 send_play_land(active_sock, active, priority_seq, card_id)
+=======
+send_play_land(active_sock, active, current_state["priority_seq_num"], card_id)
+>>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
 
 # The server should broadcast a state update to both players, then grant
 # fresh priority to the active player.
 seen_state = {}
 grant = None
+<<<<<<< HEAD
 for _ in range(12):
+=======
+for _ in range(4):
+>>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
     readable, _, _ = select.select([player1, player2], [], [], 10)
     if not readable:
         raise RuntimeError("Timed out waiting for land-play response")
@@ -162,7 +191,10 @@ for _ in range(12):
         seen_state[pid] = pdu["state"]
     elif pdu.get("type") == "PRIORITY_GRANT":
         grant = pdu
+<<<<<<< HEAD
     if grant and seen_state.get(active) is not None:
+=======
+>>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
         break
     elif pdu.get("type") == "ERROR":
         raise RuntimeError(f"PLAY_LAND rejected: {pdu}")
@@ -181,7 +213,11 @@ if card_id in state["hand"]:
     raise RuntimeError(f"{card_id} still present in hand: {state['hand']}")
 if not state.get("land_played_this_turn"):
     raise RuntimeError("land_played_this_turn was not set")
+<<<<<<< HEAD
 if grant.get("player_id") != active:
+=======
+if grant.get("priority_player") != active:
+>>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
     raise RuntimeError(f"Priority was not retained by active player: {grant}")
 
 print(f"\nPLAY_LAND milestone passed: {active} played {card_id}.")

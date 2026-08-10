@@ -104,7 +104,11 @@ while True:
             sent_priority.add(seq)
 
     elif typ == "PRIORITY_GRANT":
+<<<<<<< HEAD
         holder = pdu["player_id"]
+=======
+        holder = pdu["priority_player"]
+>>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
         target = p1 if holder == "player_1" else p2
         if pdu["seq_num"] not in sent_priority:
             send(target, {
@@ -143,7 +147,11 @@ while land_state is None or land_grant is None:
     pdu = recv(sock, pid)
     if pdu.get("type") == "GAME_STATE_UPDATE" and pdu["state"].get("active_player") == active:
         land_state = pdu["state"]
+<<<<<<< HEAD
     elif pdu.get("type") == "PRIORITY_GRANT" and pdu.get("player_id") == active:
+=======
+    elif pdu.get("type") == "PRIORITY_GRANT" and pdu.get("priority_player") == active:
+>>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
         land_grant = pdu
     elif pdu.get("type") == "ERROR":
         raise RuntimeError(f"PLAY_LAND failed: {pdu}")
@@ -185,7 +193,11 @@ while not stack_push_seen or cast_grant is None:
     elif pdu.get("type") == "ERROR":
         raise RuntimeError(f"CAST_SPELL failed: {pdu}")
 
+<<<<<<< HEAD
 if cast_grant.get("player_id") != active:
+=======
+if cast_grant.get("priority_player") != active:
+>>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
     raise RuntimeError(f"Caster did not retain priority: {cast_grant}")
 
 # Active player passes, then opponent passes; the spell must resolve.

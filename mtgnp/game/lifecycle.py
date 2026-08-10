@@ -45,6 +45,7 @@ class GameLifecycle:
         if not isinstance(deck_list, list) or not (1 <= len(deck_list) <= 50):
             return False, "ILLEGAL_DECK", {}
         if any(not self.cards.is_known_instance(card_id) for card_id in deck_list):
+<<<<<<< HEAD
             return False, "ILLEGAL_DECK", {}
         # Instance IDs are unique physical cards; base-copy limits come from the master list.
         counts={}
@@ -55,6 +56,8 @@ class GameLifecycle:
             if card and counts[base] > int(card.get("Copies in Set") or 999):
                 return False, "ILLEGAL_DECK", {}
         if len(set(deck_list)) != len(deck_list):
+=======
+>>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
             return False, "ILLEGAL_DECK", {}
 
         # Register or update player.

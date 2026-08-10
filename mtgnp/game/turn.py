@@ -97,7 +97,10 @@ class TurnEngine:
         self.state.priority_player = None
         self.state.priority_seq_num = 0
         self.state.consecutive_passes = 0
+<<<<<<< HEAD
         self.state.phase_decision_complete = False
+=======
+>>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
 
         self._prepare_turn()
         self._untap_active_player()
@@ -132,7 +135,10 @@ class TurnEngine:
         self.state.phase = self.PHASES[current_index + 1]
         self.state.priority_player = None
         self.state.consecutive_passes = 0
+<<<<<<< HEAD
         self.state.phase_decision_complete = False
+=======
+>>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
 
         self._on_phase_enter(self.state.phase)
         return self.state.phase
@@ -150,8 +156,11 @@ class TurnEngine:
             self._draw_step()
         elif phase == "CLEANUP":
             self._cleanup_step()
+<<<<<<< HEAD
         elif phase in {"BEGIN_COMBAT", "DECLARE_ATTACKERS"}:
             self.state.phase_decision_complete = False
+=======
+>>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
 
     def _untap_active_player(self) -> None:
         """Untap all permanents controlled by the active player."""
@@ -164,6 +173,10 @@ class TurnEngine:
         for permanent in player.battlefield:
             permanent["tapped"] = False
             if permanent.get("summoning_sickness"):
+<<<<<<< HEAD
+=======
+                # Summoning sickness lasts until the player's next turn.
+>>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
                 permanent["summoning_sickness"] = False
 
     def _draw_step(self) -> None:
@@ -185,7 +198,11 @@ class TurnEngine:
                 (pid for pid in self.state.players if pid != self.state.active_player),
                 None,
             )
+<<<<<<< HEAD
             self.state.game_over_reason = "DECK_EMPTY"
+=======
+            self.state.game_over_reason = "EMPTY_LIBRARY"
+>>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
             self.state.priority_player = None
             return
 
@@ -199,6 +216,7 @@ class TurnEngine:
         if player is None:
             raise ValueError("Active player is not registered")
 
+<<<<<<< HEAD
         # Remove damage, temporary effects, and per-turn prevention flags.
         for permanent in player.battlefield:
             if "damage" in permanent: permanent["damage"] = 0
@@ -211,6 +229,12 @@ class TurnEngine:
             p.damage_prevented = False
             for c in p.battlefield:
                 if c.get("attacking"): c.pop("attacking", None)
+=======
+        # Damage marked on creatures is removed during cleanup.
+        for permanent in player.battlefield:
+            if "damage" in permanent:
+                permanent["damage"] = 0
+>>>>>>> 5b145c627681b7093f9eab1d74ae9ddf22b34108
 
     def _prepare_turn(self) -> None:
         """
