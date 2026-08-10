@@ -253,10 +253,14 @@ automated/regression verification.
 | **Testing & interoperability** | | ✓ | |
 | **README / documentation / AI disclosure** | ✓ | ✓ | ✓ |
 
-## AI Usage
+### AI Usage
 
-Document all AI tools used for this project and how they were used. All AI-generated
-code must be reviewed, tested, and understood by the group before submission/demo.
+ChatGPT (OpenAI) was used during the development of this project as an AI-assisted programming and documentation tool. It was used to assist with debugging, reviewing code for RFC compliance, identifying potential implementation issues, suggesting test cases, explaining networking and game-flow concepts, and generating/editing documentation such as the README and program-flow documentation.
+
+All AI-assisted code and suggestions were reviewed, integrated, and tested by the group. The group remains responsible for the final implementation and its correctness.
+
+AI tool used: OpenAI ChatGPT, GPT-5.6 Luna, accessed August 2026.
+
 
 ## Protocol Reference
 
