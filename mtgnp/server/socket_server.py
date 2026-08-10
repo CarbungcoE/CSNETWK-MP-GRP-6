@@ -3,7 +3,7 @@ import select
 
 from mtgnp.common.framing import send_pdu, recv_pdu
 from mtgnp.common.logger import VerboseLogger
-from mtgnp.common.pdu import build_pong, build_error, build_game_over
+from mtgnp.common.pdu import build_pong, build_error
 
 from mtgnp.server.game_server import GameServer
 from mtgnp.server.dispatcher import Dispatcher
@@ -25,16 +25,30 @@ class MTGNPServer:
             label="SERVER",
         )
 
+        # Transport/server sequence number.
+        #
+        # This is ONLY for numbering server -> client PDUs.
+        # It must NOT be used as the game's authoritative
+        # action sequence number.
         self.server_seq_num = 1
+
         self.running = False
         self.server_sock = None
 
-        # Socket connections are tracked independently from
-        # protocol-level player identities.
-        self.clients = {}  # {socket_conn: connection_info}
+        # {
+        #     socket: {
+        #         "addr": (...),
+        #         "player_id": None | "player_1" | "player_2",
+        #     }
+        # }
+        self.clients = {}
 
         self.game_server = GameServer()
         self.dispatcher = Dispatcher(self.game_server)
+
+    # ================================================================
+    # SERVER LIFECYCLE
+    # ================================================================
 
     def start(self):
         self.running = True
@@ -63,9 +77,10 @@ class MTGNPServer:
 
         try:
             while self.running:
-                sockets_to_watch = [
-                    self.server_sock
-                ] + list(self.clients.keys())
+                sockets_to_watch = (
+                    [self.server_sock]
+                    + list(self.clients.keys())
+                )
 
                 readable, _, _ = select.select(
                     sockets_to_watch,
@@ -86,6 +101,10 @@ class MTGNPServer:
         finally:
             self.stop()
 
+    # ================================================================
+    # CLIENT CONNECTION
+    # ================================================================
+
     def _accept_client(self):
         """
         Accept a new TCP connection.
@@ -102,6 +121,10 @@ class MTGNPServer:
         print(
             f"Client connected from {addr}."
         )
+
+    # ================================================================
+    # CLIENT DATA
+    # ================================================================
 
     def _handle_client_data(self, conn):
         try:
@@ -124,14 +147,20 @@ class MTGNPServer:
 
             pdu_type = pdu.get("type")
 
-            # Heartbeat is handled at the transport layer.
+            # --------------------------------------------------------
+            # HEARTBEAT
+            # --------------------------------------------------------
+
             if pdu_type == "PING":
                 pong = build_pong(
                     pdu.get("seq_num", 0),
                     pdu.get("timestamp", 0),
                 )
 
-                send_pdu(conn, pong)
+                send_pdu(
+                    conn,
+                    pong,
+                )
 
                 self.logger.log_pdu(
                     "S->C",
@@ -140,7 +169,10 @@ class MTGNPServer:
 
                 return
 
-            # PLAYER_READY establishes the protocol-level identity.
+            # --------------------------------------------------------
+            # PLAYER_READY
+            # --------------------------------------------------------
+
             if pdu_type == "PLAYER_READY":
                 player_id = pdu.get("player_id")
 
@@ -159,13 +191,20 @@ class MTGNPServer:
                 )
 
                 if response is not None:
+                    # PLAYER_READY successfully established the
+                    # connection-level player identity.
                     client_info["player_id"] = player_id
+
                     self._send_response(
                         conn,
                         response,
                     )
 
                 return
+
+            # --------------------------------------------------------
+            # ALL OTHER GAME ACTIONS
+            # --------------------------------------------------------
 
             player_id = client_info.get("player_id")
 
@@ -204,12 +243,35 @@ class MTGNPServer:
         except ConnectionResetError:
             self._handle_disconnect(conn)
 
+        except ConnectionAbortedError:
+            self._handle_disconnect(conn)
+
+        except OSError:
+            self._handle_disconnect(conn)
+
         except Exception as e:
             print(
                 f"Unexpected error receiving data: {e}"
             )
 
             self._handle_disconnect(conn)
+
+    # ================================================================
+    # SERVER -> CLIENT
+    # ================================================================
+
+    def _next_server_seq(self):
+        """
+        Get the next transport/server sequence number.
+
+        IMPORTANT:
+        This is NOT the game's authoritative action sequence.
+        """
+        seq_num = self.server_seq_num
+
+        self.server_seq_num += 1
+
+        return seq_num
 
     def _send_response(
         self,
@@ -218,35 +280,70 @@ class MTGNPServer:
     ):
         """
         Send a dispatcher response to one client.
+
+        GAME_STATE_UPDATE is special:
+
+        Its seq_num is also recorded in the player's GameState as
+        the authoritative sequence that the client must echo for
+        the next action.
+
+        Non-state responses simply receive a transport sequence number.
         """
+
+        if pdu is None:
+            return
+
         response = dict(pdu)
 
-        response.setdefault(
-            "seq_num",
-            self.server_seq_num,
-        )
+        # ------------------------------------------------------------
+        # GAME_STATE_UPDATE
+        # ------------------------------------------------------------
 
-        if "seq_num" not in pdu:
-            self.server_seq_num += 1
-
-        # GAME_STATE_UPDATE carries the authoritative server
-        # sequence number that clients must echo for actions
-        # such as MULLIGAN_CHOICE.
         if response.get("type") == "GAME_STATE_UPDATE":
             client_info = self.clients.get(conn)
+
+            player_id = None
 
             if client_info is not None:
                 player_id = client_info.get("player_id")
 
-                if player_id:
-                    session = self.game_server.get_player_session(
-                        player_id
-                    )
+            session = None
 
-                    if session is not None:
-                        session.state.server_seq_num = (
-                            response["seq_num"]
-                        )
+            if player_id:
+                session = self.game_server.get_player_session(
+                    player_id
+                )
+
+            if session is not None:
+                #
+                # This response is the authoritative state snapshot
+                # for this player.
+                #
+                # Give it a fresh server sequence number.
+                #
+                seq_num = self._next_server_seq()
+
+                response["seq_num"] = seq_num
+
+                #
+                # IMPORTANT:
+                #
+                # Store the exact same sequence number that we are
+                # putting on the wire.
+                #
+                session.state.server_seq_num = seq_num
+
+            else:
+                # This should only happen for an unexpected state
+                # response before the player has been associated.
+                response["seq_num"] = self._next_server_seq()
+
+        # ------------------------------------------------------------
+        # OTHER SERVER RESPONSES
+        # ------------------------------------------------------------
+
+        else:
+            response["seq_num"] = self._next_server_seq()
 
         send_pdu(
             conn,
@@ -258,17 +355,24 @@ class MTGNPServer:
             response,
         )
 
+    # ================================================================
+    # BROADCAST
+    # ================================================================
+
     def broadcast(self, pdu: dict):
         """
         Send a server PDU to all connected clients.
+
+        NOTE:
+        Broadcast messages use transport sequence numbers only.
+        They do not modify GameState.server_seq_num because an action
+        sequence must not be made dependent on which client happened
+        to receive a broadcast first.
         """
+
         response = dict(pdu)
 
-        response["seq_num"] = (
-            self.server_seq_num
-        )
-
-        self.server_seq_num += 1
+        response["seq_num"] = self._next_server_seq()
 
         for conn in list(self.clients.keys()):
             try:
@@ -287,6 +391,10 @@ class MTGNPServer:
                     conn
                 )
 
+    # ================================================================
+    # ERRORS
+    # ================================================================
+
     def _send_error(
         self,
         conn,
@@ -298,6 +406,7 @@ class MTGNPServer:
         """
         Send an ERROR PDU without crashing the server.
         """
+
         error_pdu = build_error(
             seq_num,
             code,
@@ -319,10 +428,15 @@ class MTGNPServer:
         except Exception:
             pass
 
+    # ================================================================
+    # DISCONNECT
+    # ================================================================
+
     def _handle_disconnect(self, conn):
         """
         Handle a dropped TCP connection.
         """
+
         client_info = self.clients.get(conn)
 
         if client_info is None:
@@ -333,7 +447,7 @@ class MTGNPServer:
         )
 
         print(
-            f"Client disconnected"
+            "Client disconnected"
             + (
                 f": {player_id}"
                 if player_id
@@ -341,33 +455,48 @@ class MTGNPServer:
             )
         )
 
-        # If this client had established a game identity,
+        # If this client established a game identity,
         # remove the GameServer association.
         if player_id:
-            self.game_server.leave_session(
-                player_id
-            )
+            try:
+                self.game_server.leave_session(
+                    player_id
+                )
+            except Exception:
+                pass
 
         try:
             conn.close()
         except Exception:
             pass
 
-        del self.clients[conn]
+        self.clients.pop(
+            conn,
+            None,
+        )
+
+    # ================================================================
+    # SHUTDOWN
+    # ================================================================
 
     def stop(self):
         """
         Gracefully shut down the server and close
         all client connections.
         """
+
         if not self.running:
             return
 
-        print("Shutting down server...")
+        print(
+            "Shutting down server..."
+        )
 
         self.running = False
 
-        for conn in list(self.clients.keys()):
+        for conn in list(
+            self.clients.keys()
+        ):
             try:
                 conn.close()
             except Exception:
@@ -378,7 +507,11 @@ class MTGNPServer:
         if self.server_sock:
             try:
                 self.server_sock.close()
-                print("Server socket closed.")
+
+                print(
+                    "Server socket closed."
+                )
+
             except Exception as e:
                 print(
                     f"Error closing server socket: {e}"

@@ -117,20 +117,26 @@ class Dispatcher:
         player_id: str,
         message: dict[str, Any],
     ) -> dict[str, Any] | None:
-        """
-        Validate the player's current priority and priority token.
-        """
-        session = self._get_player_session(player_id)
+
+        session = self._get_player_session(
+            player_id
+        )
 
         if session is None:
-            return self._error("NOT_IN_GAME")
+            return self._error(
+                "NOT_IN_GAME"
+            )
 
-        if not session.has_priority(player_id):
+        if not session.has_priority(
+            player_id
+        ):
             return self._error(
                 "NOT_PRIORITY_PLAYER"
             )
 
-        seq_num = message.get("seq_num")
+        seq_num = message.get(
+            "seq_num"
+        )
 
         if seq_num is None:
             return self._error(
@@ -149,7 +155,9 @@ class Dispatcher:
         ):
             return self._error(
                 "STALE_ACTION",
-                expected_seq_num=session.get_priority_seq_num(),
+                expected_seq_num=(
+                    session.get_priority_seq_num()
+                ),
                 received_seq_num=seq_num,
             )
 
@@ -269,40 +277,80 @@ class Dispatcher:
         player_id: str,
         message: dict[str, Any],
     ) -> Any:
-        """
-        Process MULLIGAN_CHOICE.
-        """
 
-        session = self._get_player_session(player_id)
+        session = self._get_player_session(
+            player_id
+        )
 
         if session is None:
-            return self._error("NOT_IN_GAME")
+            return self._error(
+                "NOT_IN_GAME"
+            )
 
-        keep = message.get("keep")
+        seq_num = message.get(
+            "seq_num"
+        )
+
+        if seq_num is None:
+            return self._error(
+                "MISSING_SEQUENCE_NUMBER"
+            )
+
+        try:
+            seq_num = int(seq_num)
+        except (TypeError, ValueError):
+            return self._error(
+                "INVALID_SEQUENCE_NUMBER"
+            )
+
+        # MULLIGAN_CHOICE echoes the GAME_STATE_UPDATE
+        # that opened the current mulligan window.
+        if not session.validate_mulligan_seq(
+            player_id,
+            seq_num,
+        ):
+            return self._error(
+                "STALE_ACTION",
+                expected_seq_num=(
+                    session.get_mulligan_seq(
+                        player_id
+                    )
+                ),
+                received_seq_num=seq_num,
+            )
+
+        keep = message.get(
+            "keep"
+        )
 
         if keep is None:
-            return self._error("MISSING_MULLIGAN_CHOICE")
+            return self._error(
+                "MISSING_MULLIGAN_CHOICE"
+            )
 
         cards_to_bottom = message.get(
             "cards_to_bottom",
             [],
         )
 
-        success, error = session.process_mulligan(
-            player_id,
-            keep,
-            cards_to_bottom,
+        success, error = (
+            session.process_mulligan(
+                player_id,
+                keep,
+                cards_to_bottom,
+            )
         )
 
         if not success:
-            return self._error(error)
+            return self._error(
+                error
+            )
 
         return {
             "type": "MULLIGAN_RESULT",
             "player_id": player_id,
             "kept": keep,
         }
-
     # ------------------------------------------------------------------
     # Priority
     # ------------------------------------------------------------------

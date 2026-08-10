@@ -1,108 +1,140 @@
 from mtgnp.game.game_state import GameState
-from mtgnp.game.priority import PriorityManager
 
 
 class TurnEngine:
     """
-    Manages turn and phase progression for an active game.
+    Manages turn and phase progression.
 
-    TurnEngine does not own game state. It operates on the authoritative
-    GameState supplied by GameSession.
+    TurnEngine does not own GameState. It operates on the
+    authoritative GameState supplied by GameSession.
     """
 
-    # Phases in their normal order during a turn.
     PHASES = [
         "UNTAP",
         "UPKEEP",
         "DRAW",
-        "MAIN_1",
-        "COMBAT",
-        "MAIN_2",
-        "END",
+        "PRECOMBAT_MAIN",
+        "BEGIN_COMBAT",
+        "DECLARE_ATTACKERS",
+        "DECLARE_BLOCKERS",
+        "ASSIGN_DAMAGE_ORDER",
+        "FIRST_STRIKE_DAMAGE",
+        "COMBAT_DAMAGE",
+        "END_OF_COMBAT",
+        "POSTCOMBAT_MAIN",
+        "END_STEP",
         "CLEANUP",
     ]
 
-    def __init__(
-        self,
-        state: GameState,
-        priority: PriorityManager,
-    ):
+    PRIORITY_PHASES = {
+        "UPKEEP",
+        "DRAW",
+        "PRECOMBAT_MAIN",
+        "BEGIN_COMBAT",
+        "DECLARE_ATTACKERS",
+        "DECLARE_BLOCKERS",
+        "ASSIGN_DAMAGE_ORDER",
+        "FIRST_STRIKE_DAMAGE",
+        "COMBAT_DAMAGE",
+        "END_OF_COMBAT",
+        "POSTCOMBAT_MAIN",
+        "END_STEP",
+    }
+
+    def __init__(self, state: GameState):
         self.state = state
-        self.priority = priority
 
     def start_game(self) -> None:
         """
-        Start the first turn after both players complete mulligans.
+        Transition from MULLIGAN into the first turn.
+
+        The first turn starts at UNTAP. UNTAP does not receive
+        priority; the server must subsequently advance to UPKEEP.
         """
+
         if self.state.phase != "MULLIGAN":
             raise ValueError(
                 f"Cannot start game from phase {self.state.phase}"
             )
 
-        if len(self.state.players) != 2:
+        if len(self.state.players) < 2:
             raise ValueError(
-                "Cannot start game without exactly two players"
+                "Cannot start game without two players"
             )
 
         self.state.turn = 1
+        self.state.phase = "UNTAP"
+        self.state.priority_player = None
+        self.state.priority_seq_num = 0
 
         if self.state.active_player is None:
             self.state.active_player = next(
                 iter(self.state.players)
             )
 
-        self.state.priority_player = None
-        self.state.priority_seq_num = 0
-
         self._prepare_turn()
-
-        # Automatic phases at the beginning of the first turn.
-        self.state.phase = "UNTAP"
-        self.state.phase = "UPKEEP"
-
-        self.state.phase = "DRAW"
-
-        # First player decision window.
-        self.state.phase = "MAIN_1"
-
-        self.grant_phase_priority()
 
     def begin_turn(self) -> None:
         """
-        Begin a new turn for the current active player.
+        Begin a new turn.
         """
+
         if self.state.game_over:
             raise ValueError(
                 "Cannot begin a turn after game over"
             )
 
-        if len(self.state.players) != 2:
+        if not self.state.players:
             raise ValueError(
-                "Cannot begin a turn without exactly two players"
+                "Cannot begin a turn without players"
             )
 
         self.state.turn += 1
         self.state.phase = "UNTAP"
-
-        # Priority belongs to the turn/phase progression,
-        # so clear any priority from the previous turn.
         self.state.priority_player = None
 
         self._prepare_turn()
 
-        # Automatic phases at the beginning of the turn.
-        self.state.phase = "UPKEEP"
-        self.state.phase = "DRAW"
+    def advance_phase(self) -> str:
+        """
+        Advance to the next phase/step.
 
-        # First decision window of the turn.
-        self.state.phase = "MAIN_1"
+        Returns the resulting phase.
+        """
 
-        self.grant_phase_priority()
+        if self.state.game_over:
+            raise ValueError(
+                "Cannot advance phase after game over"
+            )
+
+        if self.state.phase not in self.PHASES:
+            raise ValueError(
+                f"Cannot advance from phase {self.state.phase}"
+            )
+
+        current_index = self.PHASES.index(
+            self.state.phase
+        )
+
+        if current_index == len(self.PHASES) - 1:
+            self._end_turn()
+        else:
+            self.state.phase = self.PHASES[
+                current_index + 1
+            ]
+
+        self.state.priority_player = None
+
+        return self.state.phase
+
+    def requires_priority(self) -> bool:
+        return self.state.phase in self.PRIORITY_PHASES
 
     def _prepare_turn(self) -> None:
         """
         Reset per-turn state for the active player.
         """
+
         if self.state.active_player is None:
             return
 
@@ -112,22 +144,23 @@ class TurnEngine:
 
         if player is None:
             raise ValueError(
-                "Active player is not registered in the game"
+                "Active player is not registered"
             )
 
         player.land_played_this_turn = False
 
     def _end_turn(self) -> None:
         """
-        Finish the current turn and pass control to the other player.
+        Finish the current turn and switch active player.
         """
+
         player_ids = list(
             self.state.players.keys()
         )
 
-        if len(player_ids) != 2:
+        if not player_ids:
             raise ValueError(
-                "Cannot end turn without exactly two players"
+                "Cannot end turn without players"
             )
 
         if self.state.active_player not in player_ids:
@@ -148,18 +181,3 @@ class TurnEngine:
         )
 
         self.begin_turn()
-    def grant_phase_priority(self) -> str:
-        """
-        Grant priority to the active player for the current phase.
-        """
-        if self.state.phase not in {
-            "MAIN_1",
-            "COMBAT",
-            "MAIN_2",
-            "END",
-        }:
-            raise ValueError(
-                f"Priority cannot be granted during {self.state.phase}"
-            )
-
-        return self.priority.grant_active_player_priority()

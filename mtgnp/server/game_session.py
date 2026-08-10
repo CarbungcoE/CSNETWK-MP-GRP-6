@@ -10,54 +10,49 @@ class GameSession:
     """
     Represents one authoritative game session.
 
-    GameSession owns the single GameState instance and provides
-    access to the systems that operate on that state.
+    GameSession owns the single GameState instance and
+    provides access to the systems that operate on it.
     """
 
     def __init__(self):
         self.state = GameState()
 
-        self.lifecycle = GameLifecycle(self.state)
-
-        # IMPORTANT:
-        # PriorityManager must exist BEFORE TurnEngine because
-        # TurnEngine receives the PriorityManager instance.
-        self.priority = PriorityManager(self.state)
-
-        self.turn = TurnEngine(
-            self.state,
-            self.priority,
+        self.lifecycle = GameLifecycle(
+            self.state
         )
 
-        self.stack = StackManager(self.state)
-        self.combat = CombatSystem(self.state)
+        self.turn = TurnEngine(
+            self.state
+        )
+
+        self.priority = PriorityManager(
+            self.state
+        )
+
+        self.stack = StackManager(
+            self.state
+        )
+
+        self.combat = CombatSystem(
+            self.state
+        )
 
     # ------------------------------------------------------------------
-    # Game setup
+    # Lifecycle
     # ------------------------------------------------------------------
 
     def player_ready(
         self,
         player_id: str,
         deck_list: list,
-    ) -> tuple[bool, str, dict]:
-        """
-        Process a PLAYER_READY request through the game lifecycle.
-        """
+    ):
         return self.lifecycle.process_player_ready(
             player_id,
             deck_list,
         )
 
     def start_setup(self):
-        """
-        Begin automated game setup.
-        """
         self.lifecycle.setup_game()
-
-    # ------------------------------------------------------------------
-    # Mulligan
-    # ------------------------------------------------------------------
 
     def process_mulligan(
         self,
@@ -65,205 +60,125 @@ class GameSession:
         keep: bool,
         cards_to_bottom: list,
     ):
-        """
-        Process a player's mulligan decision.
-
-        Once both players have completed their mulligan,
-        automatically start the first turn.
-        """
-        success, error = self.lifecycle.process_mulligan(
+        return self.lifecycle.process_mulligan(
             player_id,
             keep,
             cards_to_bottom,
         )
 
-        if (
-            success
-            and self.lifecycle.is_mulligan_complete()
-            and self.state.phase == "MULLIGAN"
-        ):
-            self.start_game()
-
-        return success, error
-
     def is_mulligan_complete(self) -> bool:
-        """
-        Check whether both players have completed the mulligan.
-        """
         return self.lifecycle.is_mulligan_complete()
 
-    # ------------------------------------------------------------------
-    # State
-    # ------------------------------------------------------------------
-
-    def get_visible_state(self, player_id: str):
-        """
-        Generate the state visible to a specific player.
-        """
+    def get_visible_state(
+        self,
+        player_id: str,
+    ):
         return self.lifecycle.generate_visible_state(
             player_id
         )
 
     # ------------------------------------------------------------------
-    # Turn / phase
+    # Turn
     # ------------------------------------------------------------------
 
-    def start_game(self) -> None:
-        """
-        Start the first turn after the mulligan phase.
-        """
-        self.state.consecutive_passes = 0
+    def start_game(self):
         self.turn.start_game()
 
-    def begin_turn(self) -> None:
-        """
-        Begin a new turn.
-        """
-        self.state.consecutive_passes = 0
+    def begin_turn(self):
         self.turn.begin_turn()
 
-    def advance_phase(self) -> str:
-        """
-        Advance to the next phase.
+    def advance_phase(self):
+        return self.turn.advance_phase()
 
-        Priority is cleared before the new phase receives
-        priority. Only phases that support priority receive it.
-        """
-        self.state.consecutive_passes = 0
-        self.state.priority_player = None
-
-        new_phase = self.turn.advance_phase()
-
-        if new_phase in {
-            "MAIN_1",
-            "COMBAT",
-            "MAIN_2",
-            "END",
-        }:
-            self.grant_active_player_priority()
-
-        return new_phase
+    def requires_priority(self) -> bool:
+        return self.turn.requires_priority()
 
     # ------------------------------------------------------------------
     # Priority
     # ------------------------------------------------------------------
 
-    def grant_priority(self, player_id: str) -> int:
-        """
-        Grant priority to a player.
-
-        Returns the new priority sequence number.
-        """
+    def grant_priority(
+        self,
+        player_id: str,
+    ) -> int:
         return self.priority.grant_priority(
             player_id
         )
 
-    def pass_priority(self) -> str | None:
-        """
-        Record a priority pass.
-
-        With two players, the first pass transfers priority
-        to the other player.
-
-        When both players pass consecutively, the current
-        phase advances.
-        """
-        if self.state.game_over:
-            raise ValueError(
-                "Cannot pass priority after game over"
-            )
-
-        if self.state.priority_player is None:
-            raise ValueError(
-                "Cannot pass priority when nobody has priority"
-            )
-
-        self.state.consecutive_passes += 1
-
-        player_count = len(self.state.players)
-
-        if player_count == 0:
-            raise ValueError(
-                "Cannot pass priority without players"
-            )
-
-        if self.state.consecutive_passes >= player_count:
-            self.state.consecutive_passes = 0
-
-            self.advance_phase()
-
-            return self.state.priority_player
-
+    def pass_priority(self):
         return self.priority.pass_priority()
 
-    def grant_active_player_priority(self) -> str:
-        """
-        Grant priority to the active player.
-        """
-        if self.state.active_player is None:
-            raise ValueError(
-                "Cannot grant priority without an active player"
-            )
+    def grant_active_player_priority(self):
+        return self.priority.grant_active_player_priority()
 
-        self.state.consecutive_passes = 0
-
-        self.priority.grant_priority(
-            self.state.active_player
-        )
-
-        return self.state.active_player
-
-    def has_priority(self, player_id: str) -> bool:
-        """
-        Check whether a player currently has priority.
-        """
+    def has_priority(
+        self,
+        player_id: str,
+    ) -> bool:
         return self.priority.has_priority(
             player_id
         )
 
     def get_priority_seq_num(self) -> int:
-        """
-        Return the authoritative priority sequence number.
-        """
         return self.state.priority_seq_num
 
     def validate_priority_seq_num(
         self,
         seq_num: int,
     ) -> bool:
-        """
-        Validate a client's priority sequence number.
-        """
         return self.priority.validate_seq_num(
             seq_num
+        )
+
+    # ------------------------------------------------------------------
+    # Mulligan sequence
+    # ------------------------------------------------------------------
+
+    def set_mulligan_seq(
+        self,
+        player_id: str,
+        seq_num: int,
+    ) -> None:
+        self.state.mulligan_seq_nums[
+            player_id
+        ] = seq_num
+
+    def get_mulligan_seq(
+        self,
+        player_id: str,
+    ) -> int | None:
+        return self.state.mulligan_seq_nums.get(
+            player_id
+        )
+
+    def validate_mulligan_seq(
+        self,
+        player_id: str,
+        seq_num: int,
+    ) -> bool:
+        expected = self.get_mulligan_seq(
+            player_id
+        )
+
+        return (
+            expected is not None
+            and expected == seq_num
         )
 
     # ------------------------------------------------------------------
     # Stack
     # ------------------------------------------------------------------
 
-    def push_stack(self, item: dict) -> None:
-        """
-        Put an object onto the game stack.
-        """
+    def push_stack(self, item: dict):
         self.stack.push(item)
 
-    def pop_stack(self) -> dict | None:
-        """
-        Remove and return the top stack object.
-        """
+    def pop_stack(self):
         return self.stack.pop()
 
-    def peek_stack(self) -> dict | None:
-        """
-        Inspect the top stack object without removing it.
-        """
+    def peek_stack(self):
         return self.stack.peek()
 
-    def resolve_stack(self) -> dict | None:
-        """
-        Remove the top object from the stack for resolution.
-        """
+    def resolve_stack(self):
         return self.stack.resolve_top()
 
     # ------------------------------------------------------------------
@@ -275,9 +190,6 @@ class GameSession:
         player_id: str,
         attackers: list,
     ):
-        """
-        Declare attackers for the active player.
-        """
         return self.combat.declare_attackers(
             player_id,
             attackers,
@@ -288,28 +200,21 @@ class GameSession:
         player_id: str,
         blockers: list,
     ):
-        """
-        Declare blockers for the defending player.
-        """
         return self.combat.declare_blockers(
             player_id,
             blockers,
         )
 
     def check_damage_order_needed(self):
-        """
-        Determine which attackers require damage ordering.
-        """
         return self.combat.check_damage_order_needed()
 
-    def resolve_combat(self, seq_num: int):
-        """
-        Resolve combat damage.
-        """
-        return self.combat.resolve_combat(seq_num)
+    def resolve_combat(
+        self,
+        seq_num: int,
+    ):
+        return self.combat.resolve_combat(
+            seq_num
+        )
 
     def clear_combat(self):
-        """
-        Clear the current combat state.
-        """
         self.combat.clear_combat()

@@ -62,10 +62,10 @@ def receive_until(sock, player_id, expected_type):
         )
 
 
-def send_mulligan_keep(sock, player_id):
+def send_mulligan_keep(sock, player_id, seq_num):
     pdu = {
         "type": "MULLIGAN_CHOICE",
-        "seq_num": 2,
+        "seq_num": seq_num,
         "session_id": "test-game",
         "player_id": player_id,
         "keep": True,
@@ -73,7 +73,7 @@ def send_mulligan_keep(sock, player_id):
     }
 
     send_pdu(sock, pdu)
-    print(f"{player_id} → MULLIGAN_CHOICE (keep)")
+    print(f"{player_id} → MULLIGAN_CHOICE (seq={seq_num})")
 
 
 def send_priority_pass(sock, player_id, seq_num):
@@ -142,14 +142,84 @@ receive(player2, "player_2")
 # MULLIGAN
 # ------------------------------------------------------------
 
-send_mulligan_keep(player1, "player_1")
-send_mulligan_keep(player2, "player_2")
+# Wait for the server's mulligan GAME_STATE_UPDATE for each player.
+p1_mulligan_state = receive_until(
+    player1,
+    "player_1",
+    "GAME_STATE_UPDATE",
+)
+
+p2_mulligan_state = receive_until(
+    player2,
+    "player_2",
+    "GAME_STATE_UPDATE",
+)
+
+if p1_mulligan_state is None:
+    raise RuntimeError("player_1: server closed connection during mulligan")
+
+if p2_mulligan_state is None:
+    raise RuntimeError("player_2: server closed connection during mulligan")
 
 
-# P1 receives its mulligan result.
-receive(player1, "player_1")
+# The client MUST echo the seq_num of the server's
+# GAME_STATE_UPDATE when sending MULLIGAN_CHOICE.
+p1_mulligan_seq = p1_mulligan_state["seq_num"]
+p2_mulligan_seq = p2_mulligan_state["seq_num"]
 
-# P2 receives the MAIN_1 state.
+
+print(
+    f"player_1 mulligan request seq={p1_mulligan_seq}"
+)
+print(
+    f"player_2 mulligan request seq={p2_mulligan_seq}"
+)
+
+
+# Send each player's mulligan choice using that player's
+# corresponding server sequence number.
+send_mulligan_keep(
+    player1,
+    "player_1",
+    p1_mulligan_seq,
+)
+
+send_mulligan_keep(
+    player2,
+    "player_2",
+    p2_mulligan_seq,
+)
+
+
+# P1 may receive a MULLIGAN_RESULT first.
+p1_result = receive_until(
+    player1,
+    "player_1",
+    "MULLIGAN_RESULT",
+)
+
+if p1_result is None:
+    raise RuntimeError(
+        "player_1: server closed connection after mulligan"
+    )
+
+
+# P2 may receive its MULLIGAN_RESULT before the MAIN_1 update.
+p2_result = receive_until(
+    player2,
+    "player_2",
+    "MULLIGAN_RESULT",
+)
+
+if p2_result is None:
+    raise RuntimeError(
+        "player_2: server closed connection after mulligan"
+    )
+
+
+print("\nBoth players completed mulligan.")
+
+# Now wait for the state that transitions the game into MAIN_1.
 main_state = receive_until(
     player2,
     "player_2",
@@ -157,7 +227,7 @@ main_state = receive_until(
 )
 
 if main_state is None:
-    raise RuntimeError("Server closed the connection after mulligan.")
+    raise RuntimeError("player_2: server closed connection while waiting for MAIN_1")
 
 state = main_state.get("state", {})
 
