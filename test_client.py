@@ -132,49 +132,83 @@ player2 = connect_player("player_2")
 # ------------------------------------------------------------
 
 send_ready(player1, "player_1")
-receive(player1, "player_1")
+p1_ready_state = receive(player1, "player_1")
 
 send_ready(player2, "player_2")
-receive(player2, "player_2")
-
-
+p2_ready_state = receive(player2, "player_2")
 
 
 # ------------------------------------------------------------
 # MULLIGAN
 # ------------------------------------------------------------
 
-print("DEBUG: PLAYER_READY phase complete")
-print("DEBUG: about to receive/prepare mulligan state")
-
-# The PLAYER_READY responses were:
-# player 1 -> GAME_STATE_UPDATE seq_num=1
-# player 2 -> GAME_STATE_UPDATE seq_num=2
+# player_2's PLAYER_READY response already contains the
+# MULLIGAN state, so do NOT receive another message from p2.
 #
-# The server's GAME_STATE_UPDATE seq_num is the sequence number
-# the client should use for its next action.
+# player_1's PLAYER_READY response was the LOBBY state, so
+# player_1 still needs to receive the MULLIGAN state.
 
-player1_mulligan_seq = 2
-player2_mulligan_seq = 2
+if (
+    p2_ready_state
+    and p2_ready_state.get("type") == "GAME_STATE_UPDATE"
+    and p2_ready_state.get("state", {}).get("phase") == "MULLIGAN"
+):
+    p2_mulligan_state = p2_ready_state
+else:
+    p2_mulligan_state = receive_until(
+        player2,
+        "player_2",
+        "GAME_STATE_UPDATE",
+    )
 
-print("DEBUG: about to send player_1 mulligan")
+if (
+    p1_ready_state
+    and p1_ready_state.get("type") == "GAME_STATE_UPDATE"
+    and p1_ready_state.get("state", {}).get("phase") == "MULLIGAN"
+):
+    p1_mulligan_state = p1_ready_state
+else:
+    p1_mulligan_state = receive_until(
+        player1,
+        "player_1",
+        "GAME_STATE_UPDATE",
+    )
+
+if p1_mulligan_state is None:
+    raise RuntimeError(
+        "player_1: server closed connection during mulligan"
+    )
+
+if p2_mulligan_state is None:
+    raise RuntimeError(
+        "player_2: server closed connection during mulligan"
+    )
+
+
+p1_mulligan_seq = p1_mulligan_state["seq_num"]
+p2_mulligan_seq = p2_mulligan_state["seq_num"]
+
+print(f"player_1 mulligan request seq={p1_mulligan_seq}")
+print(f"player_2 mulligan request seq={p2_mulligan_seq}")
+
+
 send_mulligan_keep(
     player1,
     "player_1",
-    player1_mulligan_seq,
+    p1_mulligan_seq,
 )
-print("DEBUG: player_1 mulligan sent")
 
-print("DEBUG: about to send player_2 mulligan")
 send_mulligan_keep(
     player2,
     "player_2",
-    player2_mulligan_seq,
+    p2_mulligan_seq,
 )
-print("DEBUG: player_2 mulligan sent")
 
 
-# P1 may receive a MULLIGAN_RESULT first.
+# ------------------------------------------------------------
+# MULLIGAN RESULTS
+# ------------------------------------------------------------
+
 p1_result = receive_until(
     player1,
     "player_1",
@@ -186,8 +220,6 @@ if p1_result is None:
         "player_1: server closed connection after mulligan"
     )
 
-
-# P2 may receive its MULLIGAN_RESULT before the MAIN_1 update.
 p2_result = receive_until(
     player2,
     "player_2",
@@ -199,78 +231,151 @@ if p2_result is None:
         "player_2: server closed connection after mulligan"
     )
 
-
 print("\nBoth players completed mulligan.")
 
-# Now wait for the state that transitions the game into MAIN_1.
-main_state = receive_until(
-    player2,
-    "player_2",
-    "GAME_STATE_UPDATE",
-)
+# ------------------------------------------------------------
+# FIRST-TURN PHASES / PRIORITY
+# ------------------------------------------------------------
 
-if main_state is None:
-    raise RuntimeError("player_2: server closed connection while waiting for MAIN_1")
+current_state = None
+priority_player = None
+priority_seq = None
 
-state = main_state.get("state", {})
+# The server's PRIORITY_GRANT seq_num is a server/message sequence.
+# It is NOT the seq_num that the newly-prioritized client should send.
+#
+# Client action sequence starts at 1 for the first priority action:
+#   player_2 -> PRIORITY_PASS seq=1
+#   player_1 -> PRIORITY_PASS seq=2
+#
+next_priority_action_seq = 1
 
-if state.get("phase") != "MAIN_1":
-    raise RuntimeError(
-        f"Expected MAIN_1, got {state}"
+while True:
+    # Receive the next server message from player_2's connection.
+    #
+    # The server sends GAME_STATE_UPDATE messages to both clients, but
+    # PRIORITY_GRANT messages are returned on the socket of the player
+    # who just passed priority.
+    response = receive(player2, "player_2")
+
+    if response is None:
+        raise RuntimeError(
+            "player_2: server closed connection during first turn"
+        )
+
+    response_type = response.get("type")
+
+    print(
+        f"First-turn response: {response_type} -> {response}"
     )
 
-priority_player = state.get("priority_player")
+    # --------------------------------------------------------
+    # GAME STATE UPDATE
+    # --------------------------------------------------------
+
+    if response_type == "GAME_STATE_UPDATE":
+        current_state = response.get("state", {})
+
+        phase = current_state.get("phase")
+        priority_player = current_state.get("priority_player")
+
+        print(
+            f"First-turn state: phase={phase}, "
+            f"active={current_state.get('active_player')}, "
+            f"priority={priority_player}, "
+            f"priority_seq={current_state.get('priority_seq_num')}"
+        )
+
+        # MAIN phase reached.
+        if phase == "PRECOMBAT_MAIN":
+            break
+
+        # If this state grants priority, pass it.
+        if priority_player is not None:
+            sock = (
+                player1
+                if priority_player == "player_1"
+                else player2
+            )
+
+            send_priority_pass(
+                sock,
+                priority_player,
+                next_priority_action_seq,
+            )
+
+            print(
+                f"DEBUG: sent priority pass with "
+                f"client seq={next_priority_action_seq}"
+            )
+
+            next_priority_action_seq += 1
+
+        continue
+
+    # --------------------------------------------------------
+    # PRIORITY GRANT
+    # --------------------------------------------------------
+
+    if response_type == "PRIORITY_GRANT":
+        priority_player = response["priority_player"]
+
+        # IMPORTANT:
+        #
+        # Do NOT use response["seq_num"] here.
+        #
+        # That value is the server's outgoing message sequence.
+        # The client's next PRIORITY_PASS sequence is tracked
+        # independently with next_priority_action_seq.
+
+        server_seq = response.get("seq_num")
+
+        print(
+            f"Priority is now {priority_player}; "
+            f"server seq={server_seq}; "
+            f"client action seq={next_priority_action_seq}"
+        )
+
+        sock = (
+            player1
+            if priority_player == "player_1"
+            else player2
+        )
+
+        send_priority_pass(
+            sock,
+            priority_player,
+            next_priority_action_seq,
+        )
+
+        print(
+            f"DEBUG: sent priority pass with "
+            f"client seq={next_priority_action_seq}"
+        )
+
+        next_priority_action_seq += 1
+
+        continue
+
+    # --------------------------------------------------------
+    # UNEXPECTED RESPONSE
+    # --------------------------------------------------------
+
+    if response_type == "ERROR":
+        raise RuntimeError(
+            f"Unexpected server error during first turn: {response}"
+        )
+
+    print(
+        f"Ignoring unexpected response during first turn: "
+        f"{response}"
+    )
+
 
 print(
-    f"\nMAIN_1 started. "
+    f"\nPRECOMBAT_MAIN reached. "
     f"Priority belongs to {priority_player}."
 )
-
-
-# ------------------------------------------------------------
-# PRIORITY LOOP
-# ------------------------------------------------------------
-#
-# The server owns the sequence/token.
-#
-# We do NOT assume:
-#
-#     1 -> 2 -> 3 -> 4
-#
-# Instead:
-#
-#     send seq N
-#          ↓
-#     receive PRIORITY_GRANT seq N+1
-#          ↓
-#     use that returned seq
-# ------------------------------------------------------------
-
-# The first priority action starts with seq_num 1.
-priority_seq = 1
-
-# Do several passes so we can verify the token keeps advancing.
-for _ in range(4):
-
-    if priority_player == "player_1":
-        sock = player1
-    else:
-        sock = player2
-
-    send_priority_pass(
-        sock,
-        priority_player,
-        priority_seq,
-    )
-
-    priority_seq, priority_player = expect_priority_grant(
-        sock,
-        priority_player,
-    )
-
-
-print("\nPriority test completed successfully.")
-
 
 # ------------------------------------------------------------
 # Clean shutdown

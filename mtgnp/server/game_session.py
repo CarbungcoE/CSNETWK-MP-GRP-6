@@ -106,6 +106,15 @@ class GameSession:
         )
 
     def pass_priority(self):
+        self.state.consecutive_passes += 1
+
+        player_count = len(self.state.players)
+
+        if self.state.consecutive_passes >= player_count:
+            self.state.consecutive_passes = 0
+            self.advance_phase()
+            return self.state.priority_player
+
         return self.priority.pass_priority()
 
     def grant_active_player_priority(self):

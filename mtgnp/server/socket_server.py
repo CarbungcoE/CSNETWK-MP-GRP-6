@@ -295,6 +295,57 @@ class MTGNPServer:
                     response,
                 )
 
+            # --------------------------------------------------------
+            # MULLIGAN -> FIRST TURN
+            # --------------------------------------------------------
+            #
+            # Dispatcher.handle_mulligan() records the player's choice
+            # and returns MULLIGAN_RESULT.  It intentionally does not
+            # own the socket-level broadcast/turn transition.
+            #
+            # Once BOTH players have kept their hands, start the first
+            # turn and immediately run the non-priority opening phases
+            # until the first priority window.
+            #
+            # TurnEngine.start_game() moves MULLIGAN -> UNTAP.  UNTAP
+            # itself does not receive priority, so advance once more to
+            # UPKEEP and grant priority to the active player.
+            # --------------------------------------------------------
+            if (
+                pdu_type == "MULLIGAN_CHOICE"
+                and response.get("type") == "MULLIGAN_RESULT"
+            ):
+                session = self.game_server.get_player_session(
+                    player_id
+                )
+
+                if session is not None and session.is_mulligan_complete():
+                    try:
+                        session.start_game()
+
+                        # UNTAP is an automatic phase with no priority.
+                        # Advance to the first priority-bearing phase.
+                        if session.state.phase == "UNTAP":
+                            session.advance_phase()
+
+                        # UPKEEP is the first phase where priority is
+                        # required. Grant it to the active player.
+                        if (
+                            session.state.phase == "UPKEEP"
+                            and session.state.priority_player is None
+                        ):
+                            session.grant_active_player_priority()
+
+                        self._broadcast_game_state(session)
+
+                    except ValueError as exc:
+                        self._send_error(
+                            conn,
+                            0,
+                            "GAME_START_FAILED",
+                            str(exc),
+                        )
+
         except ValueError as ve:
             print(
                 f"Framing/Value error: {ve}"
@@ -322,6 +373,37 @@ class MTGNPServer:
             )
 
             self._handle_disconnect(conn)
+
+    def _broadcast_game_state(self, session):
+        """
+        Send the current authoritative state to every identified player.
+
+        GAME_STATE_UPDATE sequence numbers are transport sequence numbers
+        on the wire. The authoritative priority sequence remains inside
+        GameState.priority_seq_num and is never replaced by this value.
+        """
+        for conn, client_info in list(self.clients.items()):
+            target_player_id = client_info.get("player_id")
+
+            if target_player_id is None:
+                continue
+
+            target_session = self.game_server.get_player_session(
+                target_player_id
+            )
+
+            if target_session is not session:
+                continue
+
+            state = session.get_visible_state(target_player_id)
+
+            self._send_response(
+                conn,
+                {
+                    "type": "GAME_STATE_UPDATE",
+                    "state": state,
+                },
+            )
 
     # ================================================================
     # SERVER -> CLIENT
@@ -408,6 +490,10 @@ class MTGNPServer:
         # ------------------------------------------------------------
         # OTHER SERVER RESPONSES
         # ------------------------------------------------------------
+
+        elif response.get("type") == "PRIORITY_GRANT":
+            # Keep the authoritative priority sequence number.
+            pass
 
         else:
             response["seq_num"] = self._next_server_seq()
