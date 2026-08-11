@@ -1,7 +1,13 @@
 class ClientEngine:
     def __init__(self, pid):
         self.pid = pid
+        # Action token used by the current interactive flow.
+        # In MULLIGAN this is the per-player GAME_STATE_UPDATE sequence.
+        # In priority phases this is state.priority_seq_num, not the
+        # transport/server PDU sequence.
         self.seq_num = 0
+        self.server_seq_num = 0
+        self.priority_seq_num = 0
         self.phase = "LOBBY"
         self.active_player = None
         self.priority_holder = None
@@ -21,12 +27,23 @@ class ClientEngine:
 
     def update_state(self, pdu):
         if "seq_num" in pdu:
-            self.seq_num = pdu["seq_num"]
+            self.server_seq_num = int(pdu["seq_num"])
 
         state_data = pdu.get("state", {})
         self.phase = state_data.get("phase", self.phase)
         self.active_player = state_data.get("active_player", self.active_player)
         self.priority_holder = state_data.get("priority_holder", self.priority_holder)
+        if "priority_seq_num" in state_data:
+            self.priority_seq_num = int(state_data["priority_seq_num"] or 0)
+
+        # GAME_STATE_UPDATE has two different sequence domains:
+        # - pdu.seq_num: transport/event sequence used for mulligan tokens
+        # - state.priority_seq_num: authoritative token for priority actions
+        # Never let a later broadcast event sequence overwrite a priority token.
+        if self.phase == "MULLIGAN":
+            self.seq_num = self.server_seq_num
+        elif self.priority_seq_num:
+            self.seq_num = self.priority_seq_num
         
         if "life_totals" in state_data:
             self.life_totals = state_data["life_totals"]
@@ -52,7 +69,9 @@ class ClientEngine:
             self.land_played = state_data["land_played_this_turn"]
 
     def set_priority(self, pdu):
-        self.seq_num = pdu.get("seq_num", self.seq_num)
+        if "seq_num" in pdu:
+            self.priority_seq_num = int(pdu["seq_num"])
+            self.seq_num = self.priority_seq_num
         self.priority_holder = pdu.get("priority_player", pdu.get("player_id", self.pid))
         self.time_limit = pdu.get("time_limit_ms", 60000)
 
