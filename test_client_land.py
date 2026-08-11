@@ -88,9 +88,15 @@ p1_mulligan = p1_ready if p1_ready.get("state", {}).get("phase") == "MULLIGAN" e
 p2_mulligan = p2_ready if p2_ready.get("state", {}).get("phase") == "MULLIGAN" else receive_until(player2, "player_2", "GAME_STATE_UPDATE")
 
 send_mulligan_keep(player1, "player_1", p1_mulligan["seq_num"])
-send_mulligan_keep(player2, "player_2", p2_mulligan["seq_num"])
-
 receive_until(player1, "player_1", "MULLIGAN_RESULT")
+
+# Player 1's keep broadcasts a newer mulligan token to player 2.
+while True:
+    latest = receive(player2, "player_2")
+    if latest and latest.get("type") == "GAME_STATE_UPDATE" and latest.get("state", {}).get("phase") == "MULLIGAN":
+        p2_mulligan_seq = latest["seq_num"]
+        break
+send_mulligan_keep(player2, "player_2", p2_mulligan_seq)
 receive_until(player2, "player_2", "MULLIGAN_RESULT")
 
 socks = {player1: "player_1", player2: "player_2"}

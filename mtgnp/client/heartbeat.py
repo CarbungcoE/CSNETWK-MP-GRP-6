@@ -15,12 +15,15 @@ class HeartbeatMonitor:
         timeout: float = 10.0,
         send_callback: Optional[Callable[[dict], None]] = None,
         verbose: bool = False,
+        max_missed_heartbeats: int = 2,
     ):
         self.sock = sock
         self.ping_interval = float(ping_interval)
         self.timeout = float(timeout)
         self.send_callback = send_callback
         self.verbose = verbose
+        self.max_missed_heartbeats = max(1, int(max_missed_heartbeats))
+        self._missed_heartbeats = 0
 
         self.running = False
         self.seq_num = 1
@@ -36,6 +39,7 @@ class HeartbeatMonitor:
             return
         self.running = True
         self._wake.clear()
+        self._missed_heartbeats = 0
         self._thread = threading.Thread(
             target=self._loop,
             name="mtgnp-heartbeat",
@@ -113,9 +117,22 @@ class HeartbeatMonitor:
                         if sent_at is not None
                         else self.timeout
                     )
+                    self._missed_heartbeats += 1
+                    if self._missed_heartbeats < self.max_missed_heartbeats:
+                        print(
+                            "Heartbeat warning: no matching PONG received "
+                            f"for seq={seq} within {elapsed:.1f}s "
+                            f"({self._missed_heartbeats}/{self.max_missed_heartbeats} missed). "
+                            "Keeping the connection alive and retrying."
+                        )
+                        with self._state_lock:
+                            self._pending_seq = None
+                            self._pending_sent_at = None
+                        continue
+
                     print(
-                        "Heartbeat timeout! No matching PONG received "
-                        f"for seq={seq} within {elapsed:.1f}s. "
+                        "Heartbeat timeout: no matching PONG received "
+                        f"for {self.max_missed_heartbeats} consecutive heartbeat(s). "
                         "Disconnecting from server..."
                     )
                     self.running = False
@@ -128,6 +145,8 @@ class HeartbeatMonitor:
                     except OSError:
                         pass
                     break
+            else:
+                self._missed_heartbeats = 0
 
             with self._state_lock:
                 self._pending_seq = None

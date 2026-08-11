@@ -225,6 +225,15 @@ send_mulligan_keep(
     p1_mulligan_seq,
 )
 
+# Keeping player 1 causes a fresh MULLIGAN GAME_STATE_UPDATE to player 2,
+# which replaces player 2's action token. Refresh player 2's latest state
+# before submitting its keep decision.
+while True:
+    latest = receive(player2, "player_2")
+    if latest and latest.get("type") == "GAME_STATE_UPDATE" and latest.get("state", {}).get("phase") == "MULLIGAN":
+        p2_mulligan_seq = latest["seq_num"]
+        break
+
 send_mulligan_keep(
     player2,
     "player_2",

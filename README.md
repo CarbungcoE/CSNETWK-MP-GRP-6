@@ -295,6 +295,18 @@ This prevents one player's actions from overwriting or interleaving with another
 active input prompt in the terminal. It is a client-side presentation/UX behavior and does not
 change the authoritative server state or the MTGNP protocol messages.
 
+## Interactive Heartbeat Behavior
+
+The client heartbeat runs independently of stdin and game prompts, so waiting at a local
+interactive prompt (for example, `Keep this hand? (y/n):`) does not pause PING/PONG processing.
+The client tolerates a transient missed heartbeat and only disconnects after two consecutive
+heartbeat timeouts. This prevents a single scheduling or transport delay from terminating an
+otherwise healthy two-player session.
+
+The generic `Command:` prompt is printed only when the client is not inside a protocol
+sub-flow. Mulligan, targeting, combat, and other multi-step interactions provide their own
+prompts so stale or duplicate command prompts do not appear underneath them.
+
 ## Protocol Reference
 
 The protocol specification is included in:
@@ -329,3 +341,9 @@ python client.py --host 127.0.0.1 --port 4444 --id player_2 --verbose
 ### Need to inspect protocol traffic
 
 Use `--verbose` on both sides.
+
+## Interactive Client Prompt/Transport Behavior
+
+The interactive client keeps TCP receive/heartbeat processing independent from stdin prompts. While a multi-step local interaction is active, unsolicited remote state updates are deferred so they do not overwrite the prompt. After submitting a mulligan/action that requires a server response, the client temporarily suppresses the generic `Command:` prompt until the authoritative response arrives. This prevents duplicate prompts and prevents input entered during a server transition from being interpreted as an unrelated command.
+
+The verified test suite includes two-client runtime checks for heartbeat traffic, prompt/output isolation, mulligan sequencing, priority synchronization, land play, spell resolution, and session restart.

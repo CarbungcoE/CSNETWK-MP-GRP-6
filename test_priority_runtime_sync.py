@@ -52,13 +52,33 @@ def main():
 
     try:
         _send_ready(p1, "player_1")
-        _recv_until(p1, "GAME_STATE_UPDATE")
+        first1 = _recv_until(p1, "GAME_STATE_UPDATE")
         _send_ready(p2, "player_2")
-        s1 = _recv_until(p1, "GAME_STATE_UPDATE")
+        # PLAYER_READY may yield a LOBBY update for player 1. Only the
+        # authoritative MULLIGAN snapshot is valid for MULLIGAN_CHOICE.
+        s1 = first1 if first1.get("state", {}).get("phase") == "MULLIGAN" else _recv_until(p1, "GAME_STATE_UPDATE")
         s2 = _recv_until(p2, "GAME_STATE_UPDATE")
+        if s2.get("state", {}).get("phase") != "MULLIGAN":
+            s2 = _recv_until(p2, "GAME_STATE_UPDATE")
 
         send_pdu(p1, build_mulligan_choice(s1["seq_num"], True, []))
-        send_pdu(p2, build_mulligan_choice(s2["seq_num"], True, []))
+        # A player keeping their hand causes a fresh GAME_STATE_UPDATE to be
+        # broadcast to the other player, which refreshes that player's
+        # mulligan sequence token. Always submit the latest MULLIGAN snapshot.
+        latest_s2 = s2
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            readable, _, _ = select.select([p2], [], [], 0.1)
+            if not readable:
+                continue
+            candidate = recv_pdu(p2)
+            if candidate is None:
+                raise AssertionError("server closed connection while refreshing player_2 mulligan state")
+            if candidate.get("type") == "GAME_STATE_UPDATE" and candidate.get("state", {}).get("phase") == "MULLIGAN":
+                latest_s2 = candidate
+                if latest_s2.get("state", {}).get("mulligan_status", {}).get("player_1", {}).get("kept"):
+                    break
+        send_pdu(p2, build_mulligan_choice(latest_s2["seq_num"], True, []))
 
         # Drive the automatic priority cycle until a grant is observed,
         # passing every grant. Track the state snapshot for the same player.
@@ -75,14 +95,10 @@ def main():
                 if typ == "GAME_STATE_UPDATE":
                     latest_state[socks[sock]] = pdu["state"]
                 elif typ == "PRIORITY_GRANT":
+                    # The server may send the grant before the following
+                    # GAME_STATE_UPDATE. Do not compare against an older
+                    # snapshot; hold the token until a matching state arrives.
                     pending_grant = pdu
-                    pid = pdu["player_id"]
-                    state = latest_state.get(pid)
-                    if state is not None:
-                        assert state["priority_seq_num"] == pdu["seq_num"], (
-                            f"priority seq mismatch for {pid}: "
-                            f"state={state['priority_seq_num']} grant={pdu['seq_num']}"
-                        )
                     send_pdu(sock, build_priority_pass(pdu["seq_num"]))
                 if pending_grant and latest_state.get(pending_grant["player_id"]):
                     # We only need one successful state/grant pair.

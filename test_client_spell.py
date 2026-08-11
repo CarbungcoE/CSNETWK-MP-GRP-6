@@ -57,19 +57,37 @@ for sock, pid in ((p1, "player_1"), (p2, "player_2")):
 p1_state = wait_for(p1, "player_1", "GAME_STATE_UPDATE")
 p2_state = wait_for(p2, "player_2", "GAME_STATE_UPDATE")
 
-for sock, pid, state_pdu in ((p1, "player_1", p1_state), (p2, "player_2", p2_state)):
-    if state_pdu["state"].get("phase") != "MULLIGAN":
-        state_pdu = wait_for(sock, pid, "GAME_STATE_UPDATE")
-    send(sock, {
-        "type": "MULLIGAN_CHOICE",
-        "seq_num": state_pdu["seq_num"],
-        "session_id": "test-spell",
-        "player_id": pid,
-        "keep": True,
-        "cards_to_bottom": [],
-    }, "MULLIGAN_CHOICE")
+if p1_state["state"].get("phase") != "MULLIGAN":
+    p1_state = wait_for(p1, "player_1", "GAME_STATE_UPDATE")
+if p2_state["state"].get("phase") != "MULLIGAN":
+    p2_state = wait_for(p2, "player_2", "GAME_STATE_UPDATE")
 
+send(p1, {
+    "type": "MULLIGAN_CHOICE",
+    "seq_num": p1_state["seq_num"],
+    "session_id": "test-spell",
+    "player_id": "player_1",
+    "keep": True,
+    "cards_to_bottom": [],
+}, "MULLIGAN_CHOICE")
 wait_for(p1, "player_1", "MULLIGAN_RESULT")
+
+# Player 1's keep refreshes player 2's mulligan token. Consume the latest
+# MULLIGAN state before sending player 2's keep.
+while True:
+    latest = recv(p2, "player_2")
+    if latest.get("type") == "GAME_STATE_UPDATE" and latest.get("state", {}).get("phase") == "MULLIGAN":
+        p2_state = latest
+        break
+
+send(p2, {
+    "type": "MULLIGAN_CHOICE",
+    "seq_num": p2_state["seq_num"],
+    "session_id": "test-spell",
+    "player_id": "player_2",
+    "keep": True,
+    "cards_to_bottom": [],
+}, "MULLIGAN_CHOICE")
 wait_for(p2, "player_2", "MULLIGAN_RESULT")
 
 # Drive the automatic first-turn priority windows until PRECOMBAT_MAIN.
