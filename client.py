@@ -15,6 +15,11 @@ def main():
         action="store_true",
         help="Enable verbose PDU logging",
     )
+    parser.add_argument(
+        "--session-id",
+        default="test-game",
+        help="Game session ID (must match the other client)",
+    )
 
     args = parser.parse_args()
 

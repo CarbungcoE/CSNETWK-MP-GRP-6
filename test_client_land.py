@@ -99,6 +99,7 @@ current_state = None
 latest_states = {}
 priority_player = None
 priority_seq = None
+pending_grant = None
 
 # Drive automatic priority windows until PRECOMBAT_MAIN.
 while True:
@@ -119,18 +120,27 @@ while True:
         priority_seq = current_state.get("priority_seq_num")
         print(f"STATE: phase={phase}, priority={priority_player}, seq={priority_seq}")
 
-        if phase == "PRECOMBAT_MAIN":
+        if pending_grant is not None:
             active_id = current_state.get("active_player")
-            if active_id in latest_states and latest_states[active_id].get("phase") == "PRECOMBAT_MAIN":
-                current_state = latest_states[active_id]
+            if phase == "PRECOMBAT_MAIN" and pending_grant.get("player_id") == active_id:
+                # Keep this token for PLAY_LAND.
+                priority_player = pending_grant["player_id"]
+                priority_seq = pending_grant["seq_num"]
+                current_state = latest_states.get(active_id, current_state)
                 break
 
+            target = player1 if pending_grant["player_id"] == "player_1" else player2
+            send_priority_pass(target, pending_grant["player_id"], pending_grant["seq_num"])
+            last_sent_seq = pending_grant["seq_num"]
+            pending_grant = None
+
     elif ptype == "PRIORITY_GRANT":
+        # The server sends the grant before the state snapshot. Hold it
+        # until the matching GAME_STATE_UPDATE arrives so the test can
+        # decide whether this is the PRECOMBAT_MAIN action token.
+        pending_grant = pdu
         priority_player = pdu["player_id"]
         priority_seq = pdu["seq_num"]
-        target = player1 if priority_player == "player_1" else player2
-        send_priority_pass(target, priority_player, priority_seq)
-        last_sent_seq = priority_seq
 
     elif ptype == "ERROR":
         raise RuntimeError(f"Unexpected first-turn error: {pdu}")

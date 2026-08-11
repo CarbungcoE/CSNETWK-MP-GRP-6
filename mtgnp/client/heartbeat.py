@@ -1,55 +1,134 @@
-import time
 import threading
-from mtgnp.common.framing import send_pdu
+import time
+from typing import Callable, Optional
+
 from mtgnp.common.pdu import build_ping
 
+
 class HeartbeatMonitor:
-    """Manages the periodic PING messages and PONG timeout checking for the client."""
-    
-    def __init__(self, sock, ping_interval=30.0, timeout=10.0):
+    """Send periodic PINGs and require a matching PONG within the timeout."""
+
+    def __init__(
+        self,
+        sock,
+        ping_interval: float = 30.0,
+        timeout: float = 10.0,
+        send_callback: Optional[Callable[[dict], None]] = None,
+        verbose: bool = False,
+    ):
         self.sock = sock
-        self.ping_interval = ping_interval
-        self.timeout = timeout
-        self.last_pong_time = time.time()
+        self.ping_interval = float(ping_interval)
+        self.timeout = float(timeout)
+        self.send_callback = send_callback
+        self.verbose = verbose
+
         self.running = False
-        self.seq_num = 1 # client-maintained counter independent of priority
+        self.seq_num = 1
+        self._thread = None
+        self._wake = threading.Event()
+        self._pong_event = threading.Event()
+        self._state_lock = threading.Lock()
+        self._pending_seq: Optional[int] = None
+        self._pending_sent_at: Optional[float] = None
 
     def start(self):
+        if self.running:
+            return
         self.running = True
-        self.last_pong_time = time.time()
-        threading.Thread(target=self._loop, daemon=True).start()
+        self._wake.clear()
+        self._thread = threading.Thread(
+            target=self._loop,
+            name="mtgnp-heartbeat",
+            daemon=True,
+        )
+        self._thread.start()
 
     def stop(self):
         self.running = False
+        self._wake.set()
+        self._pong_event.set()
 
-    def receive_pong(self):
-        """Called by the client's receive loop when a PONG is received."""
-        self.last_pong_time = time.time()
+    def receive_pong(self, seq_num: int):
+        """Record a PONG only when it matches the currently outstanding PING."""
+        with self._state_lock:
+            if self._pending_seq != seq_num:
+                if self.verbose:
+                    print(
+                        f"[heartbeat] Ignoring unexpected PONG seq={seq_num}; "
+                        f"waiting for {self._pending_seq}."
+                    )
+                return False
+            self._pending_seq = None
+            self._pending_sent_at = None
+            self._pong_event.set()
+            return True
+
+    def _sleep_until_next_ping(self):
+        # Wake immediately on stop; otherwise wait the configured interval.
+        return not self._wake.wait(self.ping_interval)
 
     def _loop(self):
+        # The monitor is started only after the client has received the
+        # server's initial GAME_STATE_UPDATE.  Begin with a clean interval
+        # so heartbeat traffic cannot race the handshake.
         while self.running:
-            time.sleep(self.ping_interval)
+            if not self._sleep_until_next_ping():
+                break
             if not self.running:
                 break
-            
-            # send PING
-            ping_pdu = build_ping(self.seq_num, int(time.time() * 1000))
+
+            seq = self.seq_num
+            ping = build_ping(seq, int(time.time() * 1000))
+            with self._state_lock:
+                self._pending_seq = seq
+                self._pending_sent_at = time.monotonic()
+                self._pong_event.clear()
+
             try:
-                send_pdu(self.sock, ping_pdu)
+                if self.send_callback is not None:
+                    self.send_callback(ping)
+                else:
+                    # Kept for backwards compatibility with direct use of this class.
+                    from mtgnp.common.framing import send_pdu
+                    send_pdu(self.sock, ping)
+                if self.verbose:
+                    print(f"[heartbeat] PING seq={seq}")
                 self.seq_num += 1
-            except Exception as e:
-                print(f"Heartbeat send failed: {e}")
+            except Exception as exc:
+                print(f"Heartbeat send failed: {exc}")
                 self.running = False
                 break
 
-            # wait for timeout to check if server responded with PONG
-            time.sleep(self.timeout)
-            if not self.running:
-                break
-            
-            # if the last pong was received longer ago than (interval + timeout), server is dead
-            if time.time() - self.last_pong_time > (self.ping_interval + self.timeout - 1):
-                print("Heartbeat timeout! No PONG received. Disconnecting from server...")
-                self.sock.close()
-                self.running = False
-                break
+            # Wait specifically for the matching PONG, rather than comparing
+            # against a global last-pong timestamp.
+            if not self._pong_event.wait(self.timeout):
+                with self._state_lock:
+                    still_pending = self._pending_seq == seq
+                    sent_at = self._pending_sent_at
+                if not self.running:
+                    break
+                if still_pending:
+                    elapsed = (
+                        time.monotonic() - sent_at
+                        if sent_at is not None
+                        else self.timeout
+                    )
+                    print(
+                        "Heartbeat timeout! No matching PONG received "
+                        f"for seq={seq} within {elapsed:.1f}s. "
+                        "Disconnecting from server..."
+                    )
+                    self.running = False
+                    try:
+                        self.sock.shutdown(2)
+                    except OSError:
+                        pass
+                    try:
+                        self.sock.close()
+                    except OSError:
+                        pass
+                    break
+
+            with self._state_lock:
+                self._pending_seq = None
+                self._pending_sent_at = None

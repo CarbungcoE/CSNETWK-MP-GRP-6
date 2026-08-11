@@ -122,6 +122,7 @@ lands = [c for c in hand if c.rsplit("_", 1)[0] == "mountain"]
 if not lands:
     raise RuntimeError(f"Active player has no Mountain in hand: {hand}")
 land = lands[0]
+initial_priority_seq = active_state["priority_seq_num"]
 
 send(active_sock, {
     "type": "PLAY_LAND",
@@ -142,8 +143,14 @@ while land_state is None or land_grant is None:
     pid = socks[sock]
     pdu = recv(sock, pid)
     if pdu.get("type") == "GAME_STATE_UPDATE" and pdu["state"].get("active_player") == active:
-        land_state = pdu["state"]
-    elif pdu.get("type") == "PRIORITY_GRANT" and pdu.get("player_id") == active:
+        candidate = pdu["state"]
+        if any(c.get("id") == land for c in candidate["battlefield"][active]):
+            land_state = candidate
+    elif (
+        pdu.get("type") == "PRIORITY_GRANT"
+        and pdu.get("player_id") == active
+        and int(pdu.get("seq_num", 0)) > int(initial_priority_seq)
+    ):
         land_grant = pdu
     elif pdu.get("type") == "ERROR":
         raise RuntimeError(f"PLAY_LAND failed: {pdu}")

@@ -5,6 +5,9 @@ class ClientEngine:
         self.phase = "LOBBY"
         self.active_player = None
         self.priority_holder = None
+        self.mulligan_count = 0
+        self.mulligan_kept = False
+        self.mulligan_status = {}
         
         self.life_totals = {}
         self.hand = []
@@ -39,6 +42,12 @@ class ClientEngine:
             self.graveyard = state_data["graveyard"]
         if "stack" in state_data:
             self.stack = state_data["stack"]
+        if "mulligan_count" in state_data:
+            self.mulligan_count = int(state_data["mulligan_count"])
+        if "mulligan_kept" in state_data:
+            self.mulligan_kept = bool(state_data["mulligan_kept"])
+        if "mulligan_status" in state_data:
+            self.mulligan_status = state_data["mulligan_status"]
         if "land_played_this_turn" in state_data:
             self.land_played = state_data["land_played_this_turn"]
 

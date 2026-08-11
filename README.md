@@ -268,6 +268,33 @@ All AI-assisted code and suggestions were reviewed, integrated, and tested by th
 AI tool used: OpenAI ChatGPT, GPT-5.6 Luna, accessed August 2026.
 
 
+## Known Mulligan Limitation
+
+MTGNP intentionally permits a player to mulligan repeatedly with no protocol-imposed maximum.
+Each mulligan redraws a seven-card hand. However, the RFC also requires a player who keeps
+after `N` mulligans to submit exactly `N` cards to put on the bottom of the library.
+
+This creates a protocol-defined edge case once `N` exceeds the number of cards in the current hand
+(which is normally seven): the player cannot legally keep because there are not enough cards to
+satisfy the exact-`N` requirement. The implementation does **not** invent a mulligan limit or
+change the RFC rule. Instead, the client avoids presenting an impossible bottom-card prompt and
+tells the player that they must mulligan again if they want to continue. The server continues to
+reject an impossible keep with `ILLEGAL_ACTION`.
+
+This is a known MTGNP protocol limitation/edge case, not a TCP or client/server synchronization error.
+
+## Client Prompt / Output Isolation
+
+The real interactive client may receive game-state updates, priority changes, stack events,
+and other server messages while the local player is answering a multi-step prompt. These
+background updates are intentionally not printed over the active prompt. The client updates
+its internal state silently and displays the resulting state after the local interaction is
+completed.
+
+This prevents one player's actions from overwriting or interleaving with another player's
+active input prompt in the terminal. It is a client-side presentation/UX behavior and does not
+change the authoritative server state or the MTGNP protocol messages.
+
 ## Protocol Reference
 
 The protocol specification is included in:

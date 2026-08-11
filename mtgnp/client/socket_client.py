@@ -30,9 +30,13 @@ class MTGNPClient:
         self.session_id = session_id
         self.logger = VerboseLogger(enabled=verbose, label=f"CLIENT ({player_id})")
         self.sock = None
+        self._send_lock = threading.Lock()
+        self._output_lock = threading.Lock()
+        self._deferred_output = []
         self.engine = ClientEngine(player_id)
         self.heartbeat = None
         self.connected = False
+        self._heartbeat_started = False
 
         self.card_catalog = CardCatalog()
         self.input_queue: queue.Queue[str] = queue.Queue()
@@ -41,6 +45,10 @@ class MTGNPClient:
         self.pending_interaction = None
         self.phase_action_seq = 0
         self.cleanup_action_seq = None
+        # Local UX state for the London mulligan flow. The server is
+        # authoritative; these fields mirror the latest GAME_STATE_UPDATE.
+        self.mulligan_count = 0
+        self.mulligan_waiting_for_state = False
         self.running = False
 
     # ------------------------------------------------------------------
@@ -54,8 +62,11 @@ class MTGNPClient:
         self.running = True
         print(f"Connected to server {self.host}:{self.port}")
 
-        self.heartbeat = HeartbeatMonitor(self.sock)
-        self.heartbeat.start()
+        self.heartbeat = HeartbeatMonitor(
+            self.sock,
+            send_callback=self._send_heartbeat_pdu,
+            verbose=self.logger.enabled,
+        )
 
         threading.Thread(target=self._receive_loop, daemon=True).start()
         self.input_thread = threading.Thread(target=self._stdin_loop, daemon=True)
@@ -88,6 +99,44 @@ class MTGNPClient:
                 break
 
     # ------------------------------------------------------------------
+    # Terminal UX helpers
+    # ------------------------------------------------------------------
+
+    def _interaction_active(self):
+        return self.input_context is not None or self.pending_interaction is not None
+
+    def _print_line(self, text="", *, defer_if_interacting=True):
+        """Print without letting unsolicited network updates clobber an active prompt.
+
+        The receive thread runs independently from stdin.  While the user is answering
+        a multi-step prompt (mulligan, land, cast, target, etc.), queue background
+        server notifications and flush them after that interaction completes.
+        """
+        if defer_if_interacting and self._interaction_active():
+            self._deferred_output.append(text)
+            return
+        with self._output_lock:
+            print(text)
+
+    def _print_multiline(self, text, *, defer_if_interacting=True):
+        if defer_if_interacting and self._interaction_active():
+            self._deferred_output.extend(text.splitlines())
+            return
+        with self._output_lock:
+            print(text)
+
+    def _flush_deferred_output(self):
+        if not self._deferred_output or self._interaction_active():
+            return
+        pending = self._deferred_output
+        self._deferred_output = []
+        with self._output_lock:
+            print("\n--- Updates received while you were answering ---")
+            for line in pending:
+                print(line)
+            print("--- End deferred updates ---")
+
+    # ------------------------------------------------------------------
     # Server messages
     # ------------------------------------------------------------------
 
@@ -96,24 +145,79 @@ class MTGNPClient:
 
         if pdu_type == "PONG":
             if self.heartbeat:
-                self.heartbeat.receive_pong()
+                self.heartbeat.receive_pong(int(pdu.get("seq_num", 0)))
             if self.logger.enabled:
                 print("[heartbeat] PONG")
             return
 
         if pdu_type == "GAME_STATE_UPDATE":
+            previous_phase = self.engine.phase
+            was_interacting = self._interaction_active()
             self.engine.update_state(pdu)
             self._update_action_tokens(pdu)
-            self.engine.draw_board()
-            self._print_available_actions()
+
+            # Mulligan is an interactive sub-flow. Handle its prompts before
+            # printing the generic action list so the user never sees
+            # "mulligan" offered while they are already answering a
+            # mulligan question.
+            # Mulligan state is authoritative in every GAME_STATE_UPDATE.
+            # A rejected hand produces a fresh hand and another keep decision;
+            # a kept hand must become a waiting state rather than continuing
+            # to offer the mulligan command.
+            if self.engine.phase == "MULLIGAN":
+                self.mulligan_count = self.engine.mulligan_count
+                if previous_phase != "MULLIGAN":
+                    self.mulligan_waiting_for_state = False
+
+                if (
+                    not self.engine.mulligan_kept
+                    and self.mulligan_waiting_for_state
+                    and self.input_context is None
+                ):
+                    self.mulligan_waiting_for_state = False
+                    self.input_context = {"kind": "mulligan_keep"}
+                    print("\nNew hand dealt.")
+                    print(
+                        f"You have mulliganed {self.mulligan_count} "
+                        f"time{"s" if self.mulligan_count != 1 else ""}."
+                    )
+                    print("Keep this new hand? (y/n):")
+                elif self.engine.mulligan_kept and self.input_context is not None:
+                    self.input_context = None
+                    print("\nYour hand is kept. Waiting for the other player...")
+
+            # Never redraw the entire board or generic action list over an active
+            # local prompt.  The state above is still updated silently, so the next
+            # interaction uses authoritative server state.
+            local_prompt_started = self._interaction_active() and not was_interacting
+            if not was_interacting or local_prompt_started:
+                self.engine.draw_board()
+                self._print_available_actions()
+
+            # Do not start the heartbeat until the server has answered the
+            # initial PLAYER_READY handshake.  Starting the heartbeat from
+            # _prompt_loop immediately after PLAYER_READY creates an avoidable
+            # startup race: PING can be written while the client/server are
+            # still completing the initial lobby state exchange.
+            if (
+                self.heartbeat is not None
+                and self.running
+                and not self._heartbeat_started
+            ):
+                self._heartbeat_started = True
+                self.heartbeat.start()
+                if self.logger.enabled:
+                    print("[heartbeat] monitor started after initial server state")
             return
 
         if pdu_type == "PRIORITY_GRANT":
             self.engine.set_priority(pdu)
             if pdu.get("player_id") == self.player_id:
+                # A local priority grant is an actionable event and should always
+                # surface, even if a previous prompt just completed.
                 print(f"\n>>> YOU HAVE PRIORITY (Seq #{self.engine.seq_num}) <<<")
                 self._print_available_actions()
-            else:
+            elif not self._interaction_active():
                 print(f"\nPriority passed to {pdu.get('player_id')}")
             return
 
@@ -121,27 +225,32 @@ class MTGNPClient:
             self.engine.seq_num = pdu.get("seq_num", self.engine.seq_num)
             self.engine.phase = pdu.get("to_phase", self.engine.phase)
             self.phase_action_seq = self.engine.seq_num
-            print(
-                f"\n*** PHASE TRANSITION: {pdu.get('from_phase')} -> "
+            message = (
+                f"*** PHASE TRANSITION: {pdu.get('from_phase')} -> "
                 f"{pdu.get('to_phase')} (Turn {pdu.get('turn')}) ***"
             )
-            self._print_available_actions()
+            self._print_line("\n" + message)
+            if not self._interaction_active():
+                self._print_available_actions()
             return
 
         if pdu_type == "STACK_PUSH":
-            print(f"\n[Stack Push] {pdu.get('item_type')} from {pdu.get('source')} added to stack.")
+            self._print_line(f"\n[Stack Push] {pdu.get('item_type')} from {pdu.get('source')} added to stack.")
             return
 
         if pdu_type == "STACK_RESOLVE":
-            print(f"\n[Stack Resolve] Item {pdu.get('stack_item_id')} resolved as {pdu.get('result')}.")
+            self._print_line(f"\n[Stack Resolve] Item {pdu.get('stack_item_id')} resolved as {pdu.get('result')}.")
             return
 
         if pdu_type == "COMBAT_DAMAGE_RESULT":
-            print("\n*** COMBAT DAMAGE RESOLVED ***")
-            for ev in pdu.get("damage_events", []):
-                print(f"  {ev.get('source')} dealt {ev.get('amount')} damage to {ev.get('target')}")
+            lines = ["\n*** COMBAT DAMAGE RESOLVED ***"]
+            lines.extend(
+                f"  {ev.get('source')} dealt {ev.get('amount')} damage to {ev.get('target')}"
+                for ev in pdu.get("damage_events", [])
+            )
             if pdu.get("creatures_died"):
-                print(f"  Died: {', '.join(pdu.get('creatures_died'))}")
+                lines.append(f"  Died: {', '.join(pdu.get('creatures_died'))}")
+            self._print_multiline("\n".join(lines))
             return
 
         if pdu_type == "TRIGGER_ORDER":
@@ -172,6 +281,26 @@ class MTGNPClient:
             print(f"Trigger: {pdu.get('trigger_id')}")
             print(f"Effect: {pdu.get('effect_summary', 'No summary provided')}")
             print("Accept trigger? (y/n)")
+            return
+
+        if pdu_type == "MULLIGAN_RESULT":
+            kept = bool(pdu.get("kept"))
+            if kept:
+                self.engine.mulligan_kept = True
+                self.input_context = None
+                print("\nHand kept.")
+                if self.mulligan_count:
+                    print(
+                        f"Because you mulliganed {self.mulligan_count} time"
+                        f"{"s" if self.mulligan_count != 1 else ""}, "
+                        f"you must put {self.mulligan_count} card"
+                        f"{"s" if self.mulligan_count != 1 else ""} on the bottom of your library."
+                    )
+                print("Waiting for the other player...")
+            else:
+                self.mulligan_waiting_for_state = True
+                print("\nMulligan accepted.")
+                print("Your current hand is being replaced with a new 7-card hand...")
             return
 
         if pdu_type == "ERROR":
@@ -206,6 +335,8 @@ class MTGNPClient:
         commands = []
 
         if phase == "MULLIGAN":
+            if self.engine.mulligan_kept or self.input_context is not None:
+                return ["concede"] if self.engine.mulligan_kept else []
             return ["mulligan", "concede"]
 
         if phase == "CLEANUP" and self.cleanup_action_seq is not None:
@@ -380,10 +511,12 @@ class MTGNPClient:
 
         if self.pending_interaction:
             if self._process_pending_interaction(text):
+                self._flush_deferred_output()
                 return
 
         if self.input_context:
             self._process_context(text)
+            self._flush_deferred_output()
             return
 
         cmd = text.lower()
@@ -401,8 +534,10 @@ class MTGNPClient:
         elif cmd == "concede":
             self._send(build_concede(self.engine.seq_num, self.player_id))
         elif cmd == "mulligan":
-            self.input_context = {"kind": "mulligan_keep"}
-            print("Keep hand? (y/n):")
+            self.input_context = {"kind": "mulligan_confirm"}
+            print("\nMULLIGAN: your entire current hand will be replaced with a new 7-card hand.")
+            print("You will then decide whether to keep the new hand.")
+            print("Mulligan this hand? (y/n):")
         elif cmd == "land":
             cards = self._land_cards()
             self._show_card_choices(cards, "Choose a land to play (index or card id):")
@@ -438,6 +573,8 @@ class MTGNPClient:
             count = max(0, len(self.engine.hand) - 7)
             self._show_card_choices(self.engine.hand, f"Choose {count} card(s) to discard by indexes, comma-separated:")
             self.input_context = {"kind": "discard", "cards": list(self.engine.hand), "count": count}
+
+        self._flush_deferred_output()
 
     def _process_pending_interaction(self, text):
         p = self.pending_interaction
@@ -487,38 +624,112 @@ class MTGNPClient:
 
         return False
 
+    def _prompt_mulligan_bottom(self):
+        self.mulligan_count = self.engine.mulligan_count
+        hand_size = len(self.engine.hand)
+
+        if self.mulligan_count == 0:
+            print("\nNo cards need to be put on the bottom because this is your original hand.")
+            self._send(build_mulligan_choice(self.engine.seq_num, True, []))
+            self.input_context = None
+            return
+
+        # MTGNP permits unlimited mulligans, but its RFC also requires
+        # exactly N bottomed cards after N mulligans. A redraw is seven cards,
+        # so once N exceeds the current hand size, keeping is impossible.
+        # Do not present an impossible card-selection prompt; let the player
+        # mulligan again instead.
+        if self.mulligan_count > hand_size:
+            print(
+                f"\nYou have mulliganed {self.mulligan_count} "
+                f"time{"s" if self.mulligan_count != 1 else ""}, "
+                f"but your current hand contains only {hand_size} card"
+                f"{"s" if hand_size != 1 else ""}."
+            )
+            print(
+                "MTGNP requires exactly N cards to be bottomed when you keep. "
+                "There are not enough cards in this hand to satisfy that rule."
+            )
+            print(
+                "You cannot keep this hand; mulligan again if you want to continue."
+            )
+            self.input_context = None
+            return
+
+        print(
+            f"\nKeep this hand. Because you mulliganed {self.mulligan_count} "
+            f"time{"s" if self.mulligan_count != 1 else ""}, "
+            f"choose exactly {self.mulligan_count} card"
+            f"{"s" if self.mulligan_count != 1 else ""} to put on the bottom of your library."
+        )
+        print("Choose card indexes, comma-separated:")
+        for i, cid in enumerate(self.engine.hand):
+            print(f"  [{i}] {cid}")
+        self.input_context = {
+            "kind": "mulligan_bottom",
+            "required": self.mulligan_count,
+        }
+
     def _process_context(self, text):
         c = self.input_context
         kind = c["kind"]
 
-        if kind == "mulligan_keep":
-            keep = text.lower() in {"y", "yes"}
-            if text.lower() not in {"y", "yes", "n", "no"}:
+        if kind == "mulligan_confirm":
+            value = text.lower()
+            if value not in {"y", "yes", "n", "no"}:
                 print("Enter y or n.")
                 return
-            if keep:
-                self._send(build_mulligan_choice(self.engine.seq_num, True, []))
+
+            if value in {"y", "yes"}:
+                self._send(build_mulligan_choice(self.engine.seq_num, False, []))
                 self.input_context = None
-            else:
-                print("Choose cards to bottom by indexes, comma-separated (or empty):")
-                for i, cid in enumerate(self.engine.hand):
-                    print(f"  [{i}] {cid}")
-                c["kind"] = "mulligan_bottom"
+                return
+
+            print("\nMulligan cancelled. You are keeping this hand.")
+            self._prompt_mulligan_bottom()
+            return
+
+        if kind == "mulligan_keep":
+            value = text.lower()
+            if value not in {"y", "yes", "n", "no"}:
+                print("Enter y or n.")
+                return
+
+            keep = value in {"y", "yes"}
+
+            if not keep:
+                # A mulligan choice only declares that the current hand is
+                # being rejected. Cards are NOT bottomed at this point.
+                # The server deals the replacement hand and sends a fresh
+                # GAME_STATE_UPDATE; the next keep decision happens then.
+                self._send(build_mulligan_choice(self.engine.seq_num, False, []))
+                self.input_context = None
+                return
+
+            self._prompt_mulligan_bottom()
             return
 
         if kind == "mulligan_bottom":
             indexes = [x.strip() for x in text.split(",") if x.strip()]
+            if len(indexes) != c["required"]:
+                print(f"Choose exactly {c['required']} card(s).")
+                return
+
             bottoms = []
             try:
                 for value in indexes:
                     idx = int(value)
                     if not 0 <= idx < len(self.engine.hand):
                         raise ValueError
-                    bottoms.append(self.engine.hand[idx])
+                    card_id = self.engine.hand[idx]
+                    if card_id in bottoms:
+                        raise ValueError
+                    bottoms.append(card_id)
             except ValueError:
-                print("Invalid card index list.")
+                print("Invalid card index list. Use distinct indexes from your hand.")
                 return
-            self._send(build_mulligan_choice(self.engine.seq_num, False, bottoms))
+
+            self._send(build_mulligan_choice(self.engine.seq_num, True, bottoms))
             self.input_context = None
             return
 
@@ -785,10 +996,17 @@ class MTGNPClient:
                 return pid
         return None
 
-    def _send(self, pdu: dict):
-        try:
+    def _send_heartbeat_pdu(self, pdu: dict):
+        """Thread-safe heartbeat send path shared with normal client sends."""
+        with self._send_lock:
             send_pdu(self.sock, pdu)
             self.logger.log_pdu("C->S", pdu)
+
+    def _send(self, pdu: dict):
+        try:
+            with self._send_lock:
+                send_pdu(self.sock, pdu)
+                self.logger.log_pdu("C->S", pdu)
         except Exception as e:
             print(f"Send failed: {e}")
 

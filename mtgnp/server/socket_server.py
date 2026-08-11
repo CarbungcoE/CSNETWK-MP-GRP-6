@@ -269,6 +269,12 @@ class MTGNPServer:
             )
 
             if response is not None:
+                if response.get("type") == "PRIORITY_GRANT":
+                    session = self.game_server.get_player_session(player_id)
+                    self._send_response(conn, response)
+                    if session is not None:
+                        self._broadcast_game_state(session)
+                    return
                 if response.get("type") == "ERROR":
                     session=self.game_server.get_player_session(player_id)
                     self._send_response(conn,response)
@@ -289,7 +295,6 @@ class MTGNPServer:
                                 response["controller"],
                             )
                         )
-                        self._broadcast_game_state(session)
                         self._send_response(
                             conn,
                             {
@@ -298,6 +303,7 @@ class MTGNPServer:
                                 "time_limit_ms": self.priority_time_limit_ms,
                             },
                         )
+                        self._broadcast_game_state(session)
 
                 elif response.get("type") == "LAND_PLAYED":
                     session = self.game_server.get_player_session(
@@ -308,7 +314,6 @@ class MTGNPServer:
                         # PLAY_LAND bypasses the stack. The Active Player
                         # keeps priority, so broadcast the updated state
                         # and then issue a fresh priority token.
-                        self._broadcast_game_state(session)
                         session.grant_active_player_priority()
                         self._send_response(
                             conn,
@@ -318,6 +323,7 @@ class MTGNPServer:
                                 "time_limit_ms": self.priority_time_limit_ms,
                             },
                         )
+                        self._broadcast_game_state(session)
 
                 elif response.get("type") == "ATTACKERS_DECLARED":
                     session=self.game_server.get_player_session(player_id)
@@ -336,8 +342,8 @@ class MTGNPServer:
                             self._broadcast_game_state(session)
                         else:
                             session.grant_active_player_priority()
-                            self._broadcast_game_state(session)
                             self._send_response(conn,{"type":"PRIORITY_GRANT","player_id":player_id,"time_limit_ms":self.priority_time_limit_ms})
+                            self._broadcast_game_state(session)
                 elif response.get("type") == "BLOCKERS_DECLARED":
                     session=self.game_server.get_player_session(player_id)
                     if session is not None:
@@ -348,23 +354,23 @@ class MTGNPServer:
                             self._broadcast_game_state(session)
                         else:
                             session.grant_active_player_priority()
-                            self._broadcast_game_state(session)
                             self._send_response(conn,{"type":"PRIORITY_GRANT","player_id":session.state.priority_player,"time_limit_ms":self.priority_time_limit_ms})
+                            self._broadcast_game_state(session)
                 elif response.get("type") == "DAMAGE_ORDER_ASSIGNED":
                     session=self.game_server.get_player_session(player_id)
                     if session is not None:
                         if all(a in session.combat.atk_order for a in session.check_damage_order_needed()):
                             session.state.phase_decision_complete=True
                             session.grant_active_player_priority()
-                            self._broadcast_game_state(session)
                             self._send_response(conn,{"type":"PRIORITY_GRANT","player_id":session.state.priority_player,"time_limit_ms":self.priority_time_limit_ms})
+                            self._broadcast_game_state(session)
                 elif response.get("type") == "ABILITY_ACTIVATED":
                     session=self.game_server.get_player_session(player_id)
                     if session is not None and response.get("stack_item_id"):
                         from mtgnp.common.pdu import build_stack_push
                         self.broadcast(build_stack_push(0,response["stack_item_id"],response["item_type"],response["source"],response["targets"],response["controller"]))
-                        self._broadcast_game_state(session)
                         self._send_response(conn,{"type":"PRIORITY_GRANT","player_id":player_id,"time_limit_ms":self.priority_time_limit_ms})
+                        self._broadcast_game_state(session)
                 elif response.get("type") == "DISCARD_RESULT":
                     session=self.game_server.get_player_session(player_id)
                     if session is not None:
@@ -401,7 +407,6 @@ class MTGNPServer:
                                 resolved.get("state_changes", []),
                             )
                         )
-                        self._broadcast_game_state(session)
                         if self._emit_pending_trigger_requests(session): return
 
                         if session.state.game_over:
@@ -419,6 +424,7 @@ class MTGNPServer:
                                     "time_limit_ms": self.priority_time_limit_ms,
                                 },
                             )
+                            self._broadcast_game_state(session)
 
                 elif response.get("type") == "TRIGGER_CHOICE_ACCEPTED":
                     session=self.game_server.get_player_session(player_id)
@@ -427,11 +433,11 @@ class MTGNPServer:
                         if item is not None:
                             from mtgnp.common.pdu import build_stack_push
                             self.broadcast(build_stack_push(0,item["stack_item_id"],item["item_type"],item["source_id"],item.get("targets",[]),item["controller_id"]))
-                        self._broadcast_game_state(session)
                         if not self._emit_pending_trigger_requests(session) and not session.state.game_over:
                             session.grant_active_player_priority(); target=session.state.priority_player
                             conn2=next((c for c,i in self.clients.items() if i.get("player_id")==target),None)
                             if conn2 is not None: self._send_response(conn2,{"type":"PRIORITY_GRANT","player_id":target,"time_limit_ms":self.priority_time_limit_ms})
+                        self._broadcast_game_state(session)
 
                 elif response.get("type") == "PRIORITY_PHASE_ADVANCED":
                     session = self.game_server.get_player_session(
@@ -462,10 +468,10 @@ class MTGNPServer:
                             sid=self.game_server.player_sessions.get(player_id)
                             if sid: self.game_server.reset_session(sid)
                         else:
-                            self._broadcast_game_state(session)
                             if session.state.priority_player is not None:
                                 target=session.state.priority_player; target_conn=next((c for c,i in self.clients.items() if i.get("player_id")==target),None)
                                 if target_conn is not None: self._send_response(target_conn,{"type":"PRIORITY_GRANT","player_id":target,"time_limit_ms":self.priority_time_limit_ms})
+                            self._broadcast_game_state(session)
                 else:
                     self._send_response(
                         conn,
@@ -534,10 +540,10 @@ class MTGNPServer:
                         ):
                             session.grant_active_player_priority()
 
-                        self._broadcast_game_state(session)
                         if session.state.priority_player is not None and not session.state.game_over:
                             target=session.state.priority_player; target_conn=next((c for c,i in self.clients.items() if i.get("player_id")==target),None)
                             if target_conn is not None: self._send_response(target_conn,{"type":"PRIORITY_GRANT","player_id":target,"time_limit_ms":self.priority_time_limit_ms})
+                        self._broadcast_game_state(session)
 
                     except ValueError as exc:
                         self._send_error(
@@ -546,6 +552,12 @@ class MTGNPServer:
                             "GAME_START_FAILED",
                             str(exc),
                         )
+                elif session is not None:
+                    # A mulligan rejection is a complete action by itself.
+                    # The lifecycle has already dealt the replacement hand;
+                    # publish that authoritative hand before asking the
+                    # client for its next keep decision.
+                    self._broadcast_game_state(session)
 
         except ValueError as ve:
             print(
@@ -596,7 +608,10 @@ class MTGNPServer:
             response["seq_num"]=self._next_server_seq()
             session=self.game_server.get_player_session(pid) if pid else None
             if session is not None:
-                if session.state.phase=="MULLIGAN": session.set_mulligan_seq(pid,response["seq_num"])
+                if session.state.phase=="MULLIGAN":
+                    player = session.state.players.get(pid)
+                    if player is not None and not player.kept_hand:
+                        session.set_mulligan_seq(pid,response["seq_num"])
                 if session.state.phase=="CLEANUP" and len(session.state.players[pid].hand)>7: session.state.pending_discard_seq[pid]=response["seq_num"]
         elif typ=="PRIORITY_GRANT":
             target=response.get("player_id") or response.get("priority_player")

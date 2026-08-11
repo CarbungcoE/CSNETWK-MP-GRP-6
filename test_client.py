@@ -319,7 +319,7 @@ while True:
 
             print(
                 f"DEBUG: sent priority pass with "
-                f"client seq={server_seq}"
+                f"client seq={current_priority_seq}"
             )
 
             last_priority_action_sent = current_priority_seq
@@ -329,6 +329,10 @@ while True:
     if response_type == "PRIORITY_GRANT":
         priority_player = response.get("player_id")
         server_seq = response.get("seq_num")
+
+        # Ignore a delayed duplicate grant that was already acted upon.
+        if server_seq is None or server_seq <= last_priority_action_sent:
+            continue
 
         print(
             f"Priority is now {priority_player}; "

@@ -198,9 +198,17 @@ class GameLifecycle:
             ]
 
         else:
-            # London Mulligan:
-            # the player must bottom exactly as many cards
-            # as their number of previous mulligans.
+            # MTGNP RFC rule: when keeping after N mulligans, the client
+            # MUST submit exactly N cards from the current hand.
+            #
+            # The RFC intentionally permits repeated mulligans without a
+            # protocol-imposed maximum. Because each redraw is seven cards,
+            # an N > 7 keep is therefore impossible under the RFC's exact-N
+            # requirement. We keep that state protocol-valid by rejecting
+            # the keep as ILLEGAL_ACTION rather than inventing a mulligan cap.
+            if player.mulligan_count > len(player.hand):
+                return False, "ILLEGAL_ACTION"
+
             if len(cards_to_bottom) != player.mulligan_count:
                 return False, "ILLEGAL_ACTION"
 
@@ -280,6 +288,15 @@ class GameLifecycle:
             "active_player": self.state.active_player,
             "priority_player": self.state.priority_player,
             "priority_seq_num": self.state.priority_seq_num,
+            "mulligan_count": target_player.mulligan_count,
+            "mulligan_kept": target_player.kept_hand,
+            "mulligan_status": {
+                pid: {
+                    "mulligan_count": player.mulligan_count,
+                    "kept": player.kept_hand,
+                }
+                for pid, player in self.state.players.items()
+            },
             "land_played_this_turn": target_player.land_played_this_turn,
             "life_totals": {
                 pid: player.life
