@@ -233,9 +233,13 @@ class MTGNPClient:
             return
 
         if pdu_type == "PHASE_TRANSITION":
-            self.engine.seq_num = pdu.get("seq_num", self.engine.seq_num)
+            # PHASE_TRANSITION.seq_num is a server transport/event sequence.
+            # It is NOT the priority action token, so do not overwrite
+            # engine.seq_num here. The following GAME_STATE_UPDATE carries
+            # the authoritative priority_seq_num.
+            self.engine.server_seq_num = int(pdu.get("seq_num", self.engine.server_seq_num))
             self.engine.phase = pdu.get("to_phase", self.engine.phase)
-            self.phase_action_seq = self.engine.seq_num
+            self.phase_action_seq = self.engine.server_seq_num
             message = (
                 f"*** PHASE TRANSITION: {pdu.get('from_phase')} -> "
                 f"{pdu.get('to_phase')} (Turn {pdu.get('turn')}) ***"
@@ -532,7 +536,12 @@ class MTGNPClient:
 
     def _process_input(self, raw):
         text = raw.strip()
-        if not text:
+
+        # Empty input is meaningful while an interactive prompt is active.
+        # In particular, Enter at a mana-payment prompt means use the card's
+        # required/default colors. Optional selection prompts may also use
+        # Enter to mean "choose none".
+        if not text and not self.input_context and not self.pending_interaction:
             return
 
         self._command_prompt_shown = False
