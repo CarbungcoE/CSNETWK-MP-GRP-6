@@ -127,6 +127,24 @@ class GameSession:
             return {"advanced":False,"stack_resolved":True,"resolved":resolved,"priority_player":self.state.priority_player,"priority_seq_num":self.state.priority_seq_num,"phase":self.state.phase,"turn":self.state.turn,"active_player":self.state.active_player}
         transitions=[]
         combat_results=[]
+        # Closing the post-first-strike priority window moves to regular combat damage.
+        if self.state.phase == "FIRST_STRIKE_DAMAGE":
+            from_phase=self.state.phase
+            to_phase=self.turn.advance_phase()
+            transitions.append({"from_phase":from_phase,"to_phase":to_phase})
+            if self.state.phase == "COMBAT_DAMAGE":
+                result=self.resolve_combat_damage(False)
+                self._check_state_based_actions()
+                combat_results.append(result)
+                if self.state.game_over:
+                    return {"advanced":True,"transitions":transitions,"priority_player":None,"priority_seq_num":self.state.priority_seq_num,"phase":self.state.phase,"turn":self.state.turn,"active_player":self.state.active_player,"game_over":True,"combat_results":combat_results}
+                transitions.append({"automatic":"COMBAT_DAMAGE","result":result})
+                self.clear_combat()
+                from_phase=self.state.phase
+                to_phase=self.turn.advance_phase()
+                transitions.append({"from_phase":from_phase,"to_phase":to_phase})
+                self.grant_active_player_priority()
+                return {"advanced":True,"transitions":transitions,"priority_player":self.state.priority_player,"priority_seq_num":self.state.priority_seq_num,"phase":self.state.phase,"turn":self.state.turn,"active_player":self.state.active_player,"game_over":False,"combat_results":combat_results}
         # If this was a declaration/ordering priority window, advance after the completed declaration.
         if self.state.phase in {"DECLARE_ATTACKERS","DECLARE_BLOCKERS","ASSIGN_DAMAGE_ORDER"} and not self.state.phase_decision_complete:
             raise ValueError("DECLARATION_REQUIRED")
@@ -143,9 +161,15 @@ class GameSession:
             if to_phase == "FIRST_STRIKE_DAMAGE":
                 has_fs=any(c.get("first_strike") or c.get("double_strike") for p in self.state.players.values() for c in p.battlefield if c.get("attacking") or any(a.get("creature_id")==c.get("id") for a in self.combat.atks))
                 if has_fs:
+                    # RFC 9.6: resolve first-strike damage, perform SBAs, then
+                    # open a priority window before the regular damage step.
                     result=self.resolve_combat_damage(True); self._check_state_based_actions(); combat_results.append(result)
                     transitions.append({"automatic":"FIRST_STRIKE_DAMAGE","result":result})
-                # Continue automatically into normal combat damage.
+                    if self.state.game_over:
+                        break
+                    self.grant_active_player_priority()
+                    break
+                # No first strike: skip directly to normal combat damage.
                 from_phase=self.state.phase; to_phase=self.turn.advance_phase(); transitions.append({"from_phase":from_phase,"to_phase":to_phase})
             if self.state.phase == "COMBAT_DAMAGE":
                 result=self.resolve_combat_damage(False); self._check_state_based_actions(); combat_results.append(result); transitions.append({"automatic":"COMBAT_DAMAGE","result":result})
@@ -232,43 +256,43 @@ class GameSession:
 
     def _pay_mana(self, player, card, payment):
         try:
-            normalized = {k.upper(): int(v) for k, v in payment.items()}
-        except (TypeError, ValueError):
+            normalized = {k.upper(): int(v) for k,v in payment.items()}
+        except (TypeError,ValueError):
             raise ValueError("ILLEGAL_ACTION")
         if any(v < 0 for v in normalized.values()) or any(k not in {"W","U","B","R","G","C","X"} for k in normalized):
             raise ValueError("ILLEGAL_ACTION")
-        required = {c: int(card[c]) for c in "WUBRG"}
+        required={c:int(card[c]) for c in "WUBRG"}
         for c in "WUBRG":
-            if normalized.get(c, 0) < required[c]:
-                raise ValueError("INSUFFICIENT_MANA")
-        total = sum(normalized.get(c, 0) for c in "WUBRG") + normalized.get("C", normalized.get("X", 0))
-        if total != int(card["CMC"]):
-            raise ValueError("INSUFFICIENT_MANA")
-        # Explicit payment describes the mana sources to tap. Use pool first,
-        # then battlefield permanents that produce the requested color.
+            if normalized.get(c,0) < required[c]: raise ValueError("INSUFFICIENT_MANA")
+        total=sum(normalized.get(c,0) for c in "WUBRG")+normalized.get("C",normalized.get("X",0))
+        if total != int(card["CMC"]): raise ValueError("INSUFFICIENT_MANA")
+        # Plan the entire payment without mutating state.
+        pool={c:player.mana_pool.get(c,0) for c in "WUBRGC"}
+        sources=self._untapped_mana_sources(player)
+        color_sources={c:[src for src in sources if {"mountain":"R","forest":"G","plains":"W","island":"U","swamp":"B","llanowar_elves":"G","elvish_mystic":"G","sol_ring":"C"}.get(src.get("id","").rsplit("_",1)[0])==c] for c in "WUBRG"}
+        to_tap=[]
         for c in "WUBRG":
-            need = normalized.get(c, 0)
-            from_pool = min(need, player.mana_pool.get(c, 0))
-            player.mana_pool[c] -= from_pool
-            need -= from_pool
-            if need:
-                self._tap_mana_sources(player, c, need)
-        generic = normalized.get("C", normalized.get("X", 0))
-        pool_generic = min(generic, player.mana_pool.get("C", 0))
-        player.mana_pool["C"] -= pool_generic
-        generic -= pool_generic
+            need=max(0,normalized.get(c,0)-pool[c])
+            if len(color_sources[c])<need: raise ValueError("INSUFFICIENT_MANA")
+            to_tap.extend(color_sources[c][:need])
+            pool[c]-=min(normalized.get(c,0),pool[c])
+        generic=normalized.get("C",normalized.get("X",0))
+        generic_pool=pool["C"]
+        use=min(generic,generic_pool); pool["C"]-=use; generic-=use
+        for c in "WUBRG":
+            use=min(generic,pool[c]); pool[c]-=use; generic-=use
         if generic:
-            for c in "WUBRG":
-                take = min(generic, player.mana_pool.get(c, 0))
-                player.mana_pool[c] -= take
-                generic -= take
-                if generic == 0: break
-        if generic:
-            # Tap any remaining untapped mana source for generic mana.
-            sources = self._untapped_mana_sources(player)
-            if len(sources) < generic:
-                raise ValueError("INSUFFICIENT_MANA")
-            for src in sources[:generic]: src["tapped"] = True
+            remaining=[src for src in sources if src not in to_tap]
+            if len(remaining)<generic: raise ValueError("INSUFFICIENT_MANA")
+            to_tap.extend(remaining[:generic])
+        # Commit only after validation succeeds.
+        for c in "WUBRG":
+            use=min(normalized.get(c,0),player.mana_pool.get(c,0)); player.mana_pool[c]-=use
+        generic=normalized.get("C",normalized.get("X",0)); use=min(generic,player.mana_pool.get("C",0)); player.mana_pool["C"]-=use; generic-=use
+        for c in "WUBRG":
+            if not generic: break
+            use=min(generic,player.mana_pool.get(c,0)); player.mana_pool[c]-=use; generic-=use
+        for src in to_tap: src["tapped"]=True
 
     def _untapped_mana_sources(self, player):
         bases = {"mountain":"R","forest":"G","plains":"W","island":"U","swamp":"B",
@@ -530,31 +554,71 @@ class GameSession:
             controller.graveyard.append({"id":source,"card":card})
         return {"result":result,"stack_item_id":item.get("stack_item_id"),"state_changes":changes}
 
-    def _fire_triggers(self, event, source_id, permanent):
-        # Deterministic subset of the fixed card set.
-        base=source_id.rsplit("_",1)[0]
+    def _fire_triggers(self, event, source_id, permanent, controller_id=None):
+        """Evaluate the fixed catalog's triggered abilities for an event.
+
+        The controller is the permanent's controller, never implicitly the AP.
+        """
+        controller_id = controller_id or next((pid for pid,p in self.state.players.items() if any(c.get("id")==source_id for c in p.battlefield)), self.state.active_player)
+        if controller_id is None or controller_id not in self.state.players:
+            return
+        base=source_id.rsplit("_",1)[0] if isinstance(source_id,str) else ""
+        triggers=[]
         if event=="ETB" and base=="gray_merchant":
-            self._stack_counter += 1
-            self.state.stack.append({"stack_item_id":f"trg_{self._stack_counter:03d}","item_type":"TRIGGER_ABILITY","source_id":source_id,"controller_id":self.state.active_player,"targets":[],"trigger_effect":"GRAY_MERCHANT_ETB"})
+            triggers.append({"trigger_effect":"GRAY_MERCHANT_ETB","requires_target":False,"effect_summary":"Each opponent loses life equal to your devotion to black; you gain that much life."})
         if event=="ETB" and base=="gravedigger":
-            self._stack_counter+=1
-            trigger_id=f"trg_{self._stack_counter:03d}"
-            controller_id=self.state.active_player
             legal=[entry.get("id") for entry in self.state.players[controller_id].graveyard if isinstance(entry,dict) and entry.get("id")]
             if legal:
-                self.state.pending_trigger_choices[controller_id]={"trigger_id":trigger_id,"item":{"stack_item_id":trigger_id,"item_type":"TRIGGER_ABILITY","source_id":source_id,"controller_id":controller_id,"targets":[],"trigger_effect":"GRAVEDIGGER_ETB"},"requires_target":True,"legal_targets":legal,"effect_summary":"Return target creature card from your graveyard to your hand."}
+                triggers.append({"trigger_effect":"GRAVEDIGGER_ETB","requires_target":True,"legal_targets":legal,"effect_summary":"Return target creature card from your graveyard to your hand."})
+        if event=="ATTACK" and base=="goblin_guide":
+            triggers.append({"trigger_effect":"GOBLIN_GUIDE_ATTACK","requires_target":False,"effect_summary":"Reveal the top card of defending player's library; if it is a land, put it into their hand."})
+        for spec in triggers:
+            self._stack_counter += 1
+            tid=f"trg_{self._stack_counter:03d}"
+            item={"stack_item_id":tid,"item_type":"TRIGGER_ABILITY","source_id":source_id,"controller_id":controller_id,"targets":[],"trigger_effect":spec["trigger_effect"]}
+            if spec.get("requires_target"):
+                self.state.pending_trigger_choices[controller_id]={"trigger_id":tid,"item":item,"requires_target":True,"legal_targets":list(spec.get("legal_targets",[])),"effect_summary":spec["effect_summary"]}
+            else:
+                # Collect simultaneous triggers for proper AP/NAP ordering.
+                bucket=self.state.pending_trigger_orders.setdefault(controller_id,{"trigger_ids":[],"items":{}})
+                bucket["trigger_ids"].append(tid); bucket["items"][tid]=item
+
 
     def _check_state_based_actions(self):
-        for player_id, player in self.state.players.items():
-            if player.life <= 0:
-                self.state.game_over=True; self.state.winner=next((pid for pid in self.state.players if pid!=player_id),None); self.state.game_over_reason="LIFE_ZERO"; self.state.priority_player=None; return
-        for player in self.state.players.values():
-            keep=[]
-            for permanent in player.battlefield:
-                if "toughness" in permanent and (permanent.get("toughness",0)<=0 or permanent.get("damage",0)>=permanent.get("toughness",1)):
-                    player.graveyard.append(permanent)
-                else: keep.append(permanent)
-            player.battlefield=keep
+        """Apply RFC 8.4 state-based actions repeatedly until stable."""
+        while not self.state.game_over:
+            changed=False
+            ap=self.state.active_player
+            pids=list(self.state.players)
+            # Simultaneous life-zero: Active Player loses, NAP wins.
+            dead=[pid for pid,p in self.state.players.items() if p.life <= 0]
+            if dead:
+                if len(dead) == len(pids) and ap in dead:
+                    winner=next((pid for pid in pids if pid != ap), None)
+                    loser=ap
+                else:
+                    loser=dead[0]
+                    winner=next((pid for pid in pids if pid != loser), None)
+                self.state.game_over=True
+                self.state.winner=winner
+                self.state.game_over_reason="LIFE_ZERO"
+                self.state.priority_player=None
+                return
+            for owner, player in self.state.players.items():
+                keep=[]
+                for permanent in player.battlefield:
+                    toughness=permanent.get("toughness")
+                    effective_toughness = (toughness + permanent.get("temp_toughness", 0)) if toughness is not None else None
+                    if effective_toughness is not None and (effective_toughness <= 0 or permanent.get("damage",0) >= effective_toughness):
+                        player.graveyard.append(permanent)
+                        changed=True
+                        self._fire_triggers("LEAVE_BATTLEFIELD", permanent.get("id"), permanent, controller_id=owner)
+                    else:
+                        keep.append(permanent)
+                player.battlefield=keep
+            if not changed:
+                return
+
 
     def play_land(
         self,
@@ -635,6 +699,9 @@ class GameSession:
         if ability_index < 0 or ability_index >= len(effects): raise ValueError("ILLEGAL_ACTION")
         ability=effects[ability_index].lower()
         payment=cost_payment or {}
+        if payment.get("tap") and source.get("summoning_sickness") and not source.get("haste"):
+            raise ValueError("ILLEGAL_ACTION")
+        self._validate_targets(card, targets)
         # Validate explicit activation costs encoded in the fixed card effect.
         symbols=re.findall(r"\{([WUBRGC0-9]+)\}", ability.upper())
         required={c:0 for c in "WUBRG"}; generic_required=0
@@ -646,6 +713,21 @@ class GameSession:
             if supplied.get(c,0)<required[c]: raise ValueError("INSUFFICIENT_MANA")
         generic=supplied.get("C",0)
         if generic < generic_required: raise ValueError("INSUFFICIENT_MANA")
+        # Validate the entire mana payment before changing any state.
+        pool={c:player.mana_pool.get(c,0) for c in "WUBRGC"}
+        sources=self._untapped_mana_sources(player)
+        source_colors={"mountain":"R","forest":"G","plains":"W","island":"U","swamp":"B","llanowar_elves":"G","elvish_mystic":"G","sol_ring":"C"}
+        reserved=set()
+        for c in "WUBRG":
+            need=max(0,required[c]-pool[c])
+            available=[src for src in sources if src not in reserved and source_colors.get(src.get("id","").rsplit("_",1)[0])==c]
+            if len(available)<need: raise ValueError("INSUFFICIENT_MANA")
+            reserved.update(available[:need])
+        leftover_pool = pool["C"] + sum(max(0, pool[c]-required[c]) for c in "WUBRG")
+        generic=max(0,generic_required-leftover_pool)
+        if generic:
+            remaining=[src for src in sources if src not in reserved]
+            if len(remaining)<generic: raise ValueError("INSUFFICIENT_MANA")
         if payment.get("tap"):
             if source.get("tapped"): raise ValueError("ILLEGAL_ACTION")
             source["tapped"]=True
@@ -672,7 +754,6 @@ class GameSession:
             return {"type":"ABILITY_ACTIVATED","resolved_immediately":True,"source":source_id,"priority_player":player_id,"priority_seq_num":self.state.priority_seq_num}
         if "tap: draw" in ability and not player.library:
             raise ValueError("DECK_EMPTY")
-        self._validate_targets(card, targets)
         self._stack_counter+=1; sid=f"stk_{self._stack_counter:03d}"
         item={"stack_item_id":sid,"item_type":"ABILITY","source_id":source_id,"controller_id":player_id,"targets":list(targets),"ability_effect":ability,"card":card}
         self.push_stack(item); self.state.consecutive_passes=0; self.grant_priority(player_id)

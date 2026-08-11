@@ -108,7 +108,11 @@ while True:
         if state.get("phase") == "PRECOMBAT_MAIN":
             active = state["active_player"]
             active_state = state
-            break
+            # Do not auto-pass the PRECOMBAT_MAIN grant: the active player
+            # must retain priority to exercise PLAY_LAND and CAST_SPELL.
+            if state.get("priority_player") == active:
+                break
+            continue
         holder = state.get("priority_player")
         seq = state.get("priority_seq_num")
         if holder and seq and seq not in sent_priority:

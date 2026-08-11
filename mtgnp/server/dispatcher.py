@@ -38,6 +38,26 @@ class Dispatcher:
 
         if not message_type:
             return self._error("UNKNOWN_TYPE")
+        if not isinstance(message.get("seq_num"), int) or isinstance(message.get("seq_num"), bool):
+            return self._error("ILLEGAL_ACTION", message="seq_num must be an integer")
+        required_fields = {
+            "PLAYER_READY": {"player_id", "deck_list"},
+            "MULLIGAN_CHOICE": {"keep", "cards_to_bottom"},
+            "CAST_SPELL": {"card_id", "targets", "mana_payment"},
+            "ACTIVATE_ABILITY": {"source_id", "ability_index", "targets", "cost_payment"},
+            "PLAY_LAND": {"card_id"},
+            "PRIORITY_PASS": set(),
+            "DECLARE_ATTACKERS": {"attackers"},
+            "DECLARE_BLOCKERS": {"blockers"},
+            "ASSIGN_DAMAGE_ORDER": {"attacker_id", "blocker_order"},
+            "DISCARD": {"card_ids"},
+            "CONCEDE": {"player_id"},
+            "TRIGGER_ORDER_RESPONSE": {"ordered_trigger_ids"},
+            "TRIGGER_CHOICE_RESPONSE": {"trigger_id", "accept"},
+        }
+        missing = required_fields.get(message_type, set()) - set(message)
+        if missing:
+            return self._error("ILLEGAL_ACTION", message=f"Missing required field(s): {', '.join(sorted(missing))}")
 
         handler = {
             "PLAYER_READY": self.handle_player_ready,
@@ -290,12 +310,7 @@ class Dispatcher:
         """
         Process PLAYER_READY.
         """
-        session_id = message.get("session_id")
-
-        if not session_id:
-            return self._error(
-                "ILLEGAL_ACTION"
-            )
+        session_id = message.get("session_id") or "default"
 
         try:
             session = self.server.get_or_create_session(
@@ -652,7 +667,9 @@ class Dispatcher:
         pending=session.state.pending_trigger_orders.get(player_id)
         if pending is None: return self._error("TRIGGER_ORDER_INVALID")
         ids=message.get("ordered_trigger_ids")
-        if not isinstance(ids,list) or ids != pending["trigger_ids"] and set(ids)!=set(pending["trigger_ids"]): return self._error("TRIGGER_ORDER_INVALID")
+        expected_ids=list(pending["trigger_ids"])
+        if (not isinstance(ids,list) or len(ids) != len(expected_ids) or len(set(ids)) != len(ids) or set(ids) != set(expected_ids)):
+            return self._error("TRIGGER_ORDER_INVALID")
         session.state.pending_trigger_orders.pop(player_id,None)
         session.state.pending_trigger_order_seq.pop(player_id,None)
         items=[]

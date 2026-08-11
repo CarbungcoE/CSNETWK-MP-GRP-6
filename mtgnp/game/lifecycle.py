@@ -319,5 +319,19 @@ class GameLifecycle:
                 pid: list(player.graveyard)
                 for pid, player in self.state.players.items()
             },
-            "stack": list(self.state.stack),
+            "exile": {
+                pid: list(player.exile)
+                for pid, player in self.state.players.items()
+            },
+            "stack": [self._visible_stack_item(item) for item in self.state.stack],
+        }
+    @staticmethod
+    def _visible_stack_item(item: dict) -> dict:
+        """Serialize internal stack objects to the RFC wire schema."""
+        return {
+            "stack_item_id": item.get("stack_item_id"),
+            "item_type": item.get("item_type"),
+            "source": item.get("source") or item.get("source_id"),
+            "targets": list(item.get("targets", [])),
+            "controller": item.get("controller") or item.get("controller_id"),
         }

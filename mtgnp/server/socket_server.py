@@ -8,6 +8,8 @@ from mtgnp.common.pdu import (
     build_pong,
     build_error,
     build_phase_transition,
+    validate_pdu,
+    PDUValidationError,
 )
 
 from mtgnp.server.game_server import GameServer
@@ -130,6 +132,7 @@ class MTGNPServer:
         self.clients[conn] = {
             "addr": addr,
             "player_id": None,
+            "last_server_seq": 0,
         }
 
         print(
@@ -158,6 +161,12 @@ class MTGNPServer:
                 "C->S",
                 pdu,
             )
+
+            try:
+                validate_pdu(pdu)
+            except PDUValidationError as exc:
+                self._send_error(conn, 0, "ILLEGAL_ACTION", str(exc), pdu)
+                return
 
             pdu_type = pdu.get("type")
 
@@ -426,6 +435,18 @@ class MTGNPServer:
                             )
                             self._broadcast_game_state(session)
 
+                elif response.get("type") == "TRIGGER_ORDER_ACCEPTED":
+                    session=self.game_server.get_player_session(player_id)
+                    if session is not None:
+                        from mtgnp.common.pdu import build_stack_push
+                        for item in response.get("items", []):
+                            self.broadcast(build_stack_push(0,item["stack_item_id"],item["item_type"],item.get("source_id"),item.get("targets",[]),item.get("controller_id")))
+                        if not self._emit_pending_trigger_requests(session) and not session.state.game_over:
+                            session.grant_active_player_priority(); target=session.state.priority_player
+                            conn2=next((c for c,i in self.clients.items() if i.get("player_id")==target),None)
+                            if conn2 is not None: self._send_response(conn2,{"type":"PRIORITY_GRANT","player_id":target,"time_limit_ms":self.priority_time_limit_ms})
+                        self._broadcast_game_state(session)
+
                 elif response.get("type") == "TRIGGER_CHOICE_ACCEPTED":
                     session=self.game_server.get_player_session(player_id)
                     if session is not None:
@@ -636,6 +657,7 @@ class MTGNPServer:
                 else: session.state.pending_trigger_order_seq[target]=response["seq_num"]
         elif typ=="ERROR":
             response.pop("error",None)
+            response["seq_num"] = self._next_server_seq()
         else:
             response["seq_num"]=self._next_server_seq()
             if typ=="PHASE_TRANSITION" and response.get("to_phase") in {"DECLARE_ATTACKERS","DECLARE_BLOCKERS","ASSIGN_DAMAGE_ORDER"}:
@@ -676,6 +698,8 @@ class MTGNPServer:
                     conn,
                     response,
                 )
+                if conn in self.clients:
+                    self.clients[conn]["last_server_seq"] = response.get("seq_num", self.clients[conn].get("last_server_seq", 0))
 
                 self.logger.log_pdu(
                     "S->ALL",
@@ -688,10 +712,17 @@ class MTGNPServer:
                 )
 
     def _emit_pending_trigger_requests(self,session):
+        # Target/optional trigger choices must be resolved before priority.
         for pid,pending in list(session.state.pending_trigger_choices.items()):
             conn=next((c for c,i in self.clients.items() if i.get("player_id")==pid),None)
             if conn is None: continue
-            self._send_response(conn,{"type":"TRIGGER_CHOICE","player_id":pid,"trigger_id":pending["trigger_id"],"source_id":pending["item"]["source_id"],"effect_summary":pending["effect_summary"],"requires_target":pending["requires_target"],"legal_targets":list(pending["legal_targets"])})
+            self._send_response(conn,{"type":"TRIGGER_CHOICE","player_id":pid,"trigger_id":pending["trigger_id"],"source_id":pending["item"]["source_id"],"effect_summary":pending["effect_summary"],"requires_target":pending["requires_target"],"legal_targets":list(pending.get("legal_targets",[]))})
+            return True
+        # Then ask each controller to order simultaneous triggers.
+        for pid,pending in list(session.state.pending_trigger_orders.items()):
+            conn=next((c for c,i in self.clients.items() if i.get("player_id")==pid),None)
+            if conn is None: continue
+            self._send_response(conn,{"type":"TRIGGER_ORDER","player_id":pid,"trigger_ids":list(pending["trigger_ids"])})
             return True
         return False
 
@@ -729,7 +760,7 @@ class MTGNPServer:
         """
 
         error_pdu = build_error(
-            seq_num,
+            self._next_server_seq(),
             code,
             message,
             rejected_action,

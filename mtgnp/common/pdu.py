@@ -46,7 +46,7 @@ def validate_pdu(pdu: Any) -> None:
     if "type" not in pdu or not isinstance(pdu["type"], str):
         raise PDUValidationError("PDU missing valid string field 'type'.")
 
-    if "seq_num" not in pdu or not isinstance(pdu["seq_num"], int):
+    if "seq_num" not in pdu or not isinstance(pdu["seq_num"], int) or isinstance(pdu["seq_num"], bool):
         raise PDUValidationError("PDU missing valid integer field 'seq_num'.")
 
 
