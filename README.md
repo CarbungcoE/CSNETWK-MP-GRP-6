@@ -143,6 +143,12 @@ priority and player actions
 later phases / next turns
 ```
 
+### Client entry point
+
+The top-level `client.py` is the real interactive client entry point and delegates to
+`mtgnp.client.socket_client`. Run it with the commands shown above. The wrapper is
+intentionally kept thin so there is only one implementation of the interactive client.
+
 ## Verbose Mode
 
 Use `--verbose` on both the server and real clients during development and demos.
