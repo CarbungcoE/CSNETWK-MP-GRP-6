@@ -162,6 +162,17 @@ class MTGNPClient:
             was_interacting = self._interaction_active()
             self.engine.update_state(pdu)
             self._update_action_tokens(pdu)
+
+            # _waiting_for_server_input is currently a mulligan-only guard.
+            # Once the authoritative state leaves MULLIGAN, never let that
+            # guard leak into normal gameplay. Without this reset, a player
+            # who kept their opening hand can reach UPKEEP/MAIN with the
+            # flag still set and every subsequent command is rejected as if
+            # the previous mulligan were still processing.
+            if self.engine.phase != "MULLIGAN":
+                self._waiting_for_server_input = False
+                self.mulligan_waiting_for_state = False
+
             if not self._interaction_active():
                 self._command_prompt_shown = False
 
@@ -301,6 +312,12 @@ class MTGNPClient:
         if pdu_type == "MULLIGAN_RESULT":
             kept = bool(pdu.get("kept"))
             if kept:
+                # The mulligan action has completed. Do not carry the
+                # mulligan-only server-wait guard into the actual game.
+                # Otherwise every later command (pass/cast/land/etc.) is
+                # rejected with the misleading "previous action" message.
+                self._waiting_for_server_input = False
+                self.mulligan_waiting_for_state = False
                 self.engine.mulligan_kept = True
                 self.input_context = None
                 self._print_line("\nHand kept.")
